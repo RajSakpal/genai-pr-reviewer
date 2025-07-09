@@ -1,5 +1,5 @@
 import { Octokit } from "@octokit/rest";
-import analyzeDiffWithAI from "../langchainAgent.js";
+import analyzeDiffWithAI from "./langchainAgent.js";
 
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 
