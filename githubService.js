@@ -32,9 +32,7 @@ async function processPullRequest(pr, repo) {
               owner,
               repo: repoName,
               issue_number: prNumber,
-              body: `### 🤖 AI Suggestion for \`${file.filename}\` - Hunk ${
-                index + 1
-              }\n\n${suggestions}`,
+              body: `### 🤖 AI Suggestion for \`${file.filename}\`\n\n${suggestions}`,
             });
 
             console.log(
