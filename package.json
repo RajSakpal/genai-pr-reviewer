@@ -12,6 +12,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@langchain/google-genai": "^0.2.14",
     "@langchain/openai": "^0.5.18",
     "@octokit/rest": "^22.0.0",
     "body-parser": "^2.2.0",
