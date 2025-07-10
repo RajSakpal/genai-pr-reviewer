@@ -1,5 +1,6 @@
 import { Octokit } from "@octokit/rest";
 import analyzeDiffWithAI from "./langchainAgent.js";
+import { splitDiffIntoHunks } from "./utils/diffUtils.js";
 
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 
@@ -17,22 +18,38 @@ async function processPullRequest(pr, repo) {
       pull_number: prNumber,
     });
 
-    for (const file of files) {
-      if (file.patch) {
-        console.log(`🔍 Analyzing ${file.filename}`);
-        console.log("File Patch: ",file.patch);
-        const suggestions = await analyzeDiffWithAI(file.patch, file.filename);
+    const commentPromises = files
+      .filter((file) => file.patch)
+      .flatMap((file) => {
+        const hunks = splitDiffIntoHunks(file.patch);
 
-        await octokit.issues.createComment({
-          owner,
-          repo: repoName,
-          issue_number: prNumber,
-          body: `### 🤖 AI Suggestions for \`${file.filename}\`\n\n${suggestions}`,
+        return hunks.map(async (hunk, index) => {
+          try {
+            console.log(`🔍 Analyzing hunk #${index + 1} in ${file.filename}`);
+            const suggestions = await analyzeDiffWithAI(hunk, file.filename);
+
+            await octokit.issues.createComment({
+              owner,
+              repo: repoName,
+              issue_number: prNumber,
+              body: `### 🤖 AI Suggestion for \`${file.filename}\` - Hunk ${
+                index + 1
+              }\n\n${suggestions}`,
+            });
+
+            console.log(
+              `💬 Comment posted for hunk #${index + 1} in ${file.filename}`
+            );
+          } catch (err) {
+            console.error(
+              `❌ Error processing hunk in ${file.filename}:`,
+              err.message
+            );
+          }
         });
+      });
 
-        console.log(`💬 Comment posted for ${file.filename}`);
-      }
-    }
+    await Promise.all(commentPromises);
   } catch (error) {
     console.error("❌ GitHub processing error:", error);
   }

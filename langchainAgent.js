@@ -38,7 +38,7 @@ Highlight any issues, suggest improvements, and mention best practices if applic
 });
 
 // ✅ Diff analysis function
-async function analyzeDiffWithAI(diff, filename) {
+async function analyzeDiffWithAI(hunk, filename) {
   try {
     const prompt = await promptTemplate.format({ diff , filename });
     const response = await model.invoke(prompt);
