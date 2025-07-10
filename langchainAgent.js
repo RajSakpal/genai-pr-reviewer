@@ -25,20 +25,22 @@ const model = new ChatGoogleGenerativeAI({
 const promptTemplate = new PromptTemplate({
   template: `
 You are a senior software engineer reviewing a GitHub Pull Request.
-Below is the diff of a file:
+
+The following changes are in the file: \`{filename}\`
 -----------------
 {diff}
 -----------------
 
-Suggest improvements or highlight issues in the above code. Be concise, technical, and helpful.
+Provide clear, concise, and constructive feedback on the code changes. 
+Highlight any issues, suggest improvements, and mention best practices if applicable.
 `,
-  inputVariables: ["diff"],
+  inputVariables: ["diff", "filename"],
 });
 
 // ✅ Diff analysis function
 async function analyzeDiffWithAI(diff, filename) {
   try {
-    const prompt = await promptTemplate.format({ diff });
+    const prompt = await promptTemplate.format({ diff , filename });
     const response = await model.invoke(prompt);
     return response.content;
   } catch (error) {
