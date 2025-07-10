@@ -21,18 +21,18 @@ You are a senior software engineer reviewing a GitHub Pull Request.
 
 The following changes are in the file: \`{filename}\`
 -----------------
-{diff}
+{hunk}
 -----------------
 
 Provide clear, concise, and constructive feedback on the code changes. 
 Highlight any issues, suggest improvements, and mention best practices if applicable.
 `,
-  inputVariables: ["diff", "filename"],
+  inputVariables: ["hunk", "filename"],
 });
 
 async function analyzeDiffWithAI(hunk, filename) {
   try {
-    const prompt = await promptTemplate.format({ diff , filename });
+    const prompt = await promptTemplate.format({ hunk , filename });
     const response = await model.invoke(prompt);
     return response.content;
   } catch (error) {
