@@ -5,13 +5,12 @@ import { PromptTemplate } from "@langchain/core/prompts";
 const apiKey = process.env.GOOGLE_API_KEY;
 
 if (!apiKey) {
-  console.error("❌ Google API key environment variable is not set!");
-  console.error("Please check your .env file and ensure it contains either:");
+  throw new Error("❌ Google API key is not set in the environment!");
 }
 
 const model = new ChatGoogleGenerativeAI({
-  model: "gemini-1.5-flash", // Fixed parameter name and stable model
-  apiKey: apiKey,
+  model: "gemini-1.5-flash",
+  apiKey,
   temperature: 0.3,
 });
 
@@ -30,15 +29,13 @@ Highlight any issues, suggest improvements, and mention best practices if applic
   inputVariables: ["hunk", "filename"],
 });
 
-async function analyzeDiffWithAI(hunk, filename) {
+export async function analyzeDiffWithAI(hunk, filename) {
   try {
-    const prompt = await promptTemplate.format({ hunk , filename });
+    const prompt = await promptTemplate.format({ hunk, filename });
     const response = await model.invoke(prompt);
     return response.content;
   } catch (error) {
-    console.error("❌ Error analyzing diff:", error.message);
+    console.error("❌ AI analysis failed:", error.message);
     throw error;
   }
 }
-
-export default analyzeDiffWithAI;

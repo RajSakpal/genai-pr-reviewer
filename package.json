@@ -1,16 +1,25 @@
 {
   "name": "genai-pr-reviewer",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "An AI-powered GitHub PR review bot using Langchain and Gemini/OpenAI",
+  "main": "server.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node index.js"
+    "dev": "nodemon server.js",
+    "start": "node server.js",
+    "test": "jest"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "AI",
+    "PR-review",
+    "Langchain",
+    "GitHub",
+    "Gemini",
+    "OpenAI",
+    "Node.js"
+  ],
+  "author": "Raj Sakpal",
+  "license": "MIT",
   "dependencies": {
     "@langchain/google-genai": "^0.2.14",
     "@langchain/openai": "^0.5.18",
@@ -19,5 +28,9 @@
     "dotenv": "^17.1.0",
     "express": "^5.1.0",
     "langchain": "^0.3.29"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.0"
   }
 }
