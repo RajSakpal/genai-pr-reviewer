@@ -13,10 +13,10 @@ app.use(bodyParser.json());
 app.post("/webhook", async (req, res) => {
   const event = req.headers["x-github-event"];
   console.log(`📦 Received GitHub event: ${event}`);
+  console.log("📄 Request body:", JSON.stringify(req.body, null, 2));
 
   if (event === "pull_request" && req.body.action === "opened") {
     const { pull_request, repository } = req.body;
-
     try {
       await processPullRequest(pull_request, repository);
       res.sendStatus(200);
@@ -28,6 +28,7 @@ app.post("/webhook", async (req, res) => {
     res.sendStatus(204); // No action needed
   }
 });
+
 
 app.listen(PORT, () => {
   console.log(`🚀 Webhook server running on http://localhost:${PORT}`);

@@ -1,5 +1,4 @@
 import { Octokit } from "@octokit/rest";
-import { splitDiffIntoHunks } from "../utils/diffUtils.js";
 import { analyzeDiffWithAI } from "../agents/langchainAgent.js";
 
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
@@ -18,30 +17,29 @@ export async function processPullRequest(pullRequest, repository) {
       pull_number: prNumber,
     });
 
-    const commentTasks = [];
+    console.log(`🗂️ Found ${files.length} changed file(s).`);
 
-    for (const file of files) {
-      if (!file.patch) continue;
-
-      const hunks = splitDiffIntoHunks(file.patch);
-
-      hunks.forEach((hunk, index) => {
-        const task = analyzeDiffAndComment(owner, repo, prNumber, file.filename, hunk, index);
-        commentTasks.push(task);
+    const commentTasks = files
+      .filter((file) => file.patch)
+      .map((file, idx) => {
+        console.log(`📄 File #${idx + 1}: ${file.filename}`);
+        return analyzeDiffAndComment(owner, repo, prNumber, file.filename, file.patch);
       });
-    }
 
     await Promise.all(commentTasks);
-    console.log(`✅ All comments posted for PR #${prNumber}`);
+
+    console.log(`✅ All AI comments posted for PR #${prNumber}`);
   } catch (error) {
-    console.error("❌ Failed to process PR:", error.message);
+    console.error("❌ Error processing PR:", error.stack || error.message);
   }
 }
 
-async function analyzeDiffAndComment(owner, repo, prNumber, filename, hunk, index) {
+async function analyzeDiffAndComment(owner, repo, prNumber, filename, patch) {
   try {
-    console.log(`🔍 Analyzing hunk #${index + 1} in ${filename}`);
-    const suggestions = await analyzeDiffWithAI(hunk, filename);
+    console.log(`🔍 Analyzing ${filename}`);
+    const suggestions = await analyzeDiffWithAI(patch, filename);
+
+    console.log(`📝 AI suggestions ready for ${filename}`);
 
     await octokit.issues.createComment({
       owner,
@@ -50,8 +48,9 @@ async function analyzeDiffAndComment(owner, repo, prNumber, filename, hunk, inde
       body: `### 🤖 AI Suggestion for \`${filename}\`\n\n${suggestions}`,
     });
 
-    console.log(`💬 Comment posted for hunk #${index + 1} in ${filename}`);
+    console.log(`💬 Comment posted for ${filename}`);
   } catch (err) {
-    console.error(`❌ Error posting comment for ${filename} hunk #${index + 1}:`, err.message);
+    console.error(`❌ Error posting comment for ${filename}:`, err.stack || err.message);
   }
 }
+
