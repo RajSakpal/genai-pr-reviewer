@@ -37,6 +37,7 @@ export async function processPullRequest(pullRequest, repository) {
 async function analyzeDiffAndComment(owner, repo, prNumber, filename, patch) {
   try {
     console.log(`🔍 Analyzing ${filename}`);
+    console.log(`📄 Patch: ${patch}`);
     const suggestions = await analyzeDiffWithAI(patch, filename);
 
     console.log(`📝 AI suggestions ready for ${filename}`);
