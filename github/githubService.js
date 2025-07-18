@@ -1,16 +1,20 @@
 import { Octokit } from "@octokit/rest";
-import { analyzeDiffWithAI } from "../agents/langchainAgent.js";
+import { analyzeDiffWithContext } from "../agents/contextualLangchainAgent.js";
+import { CodebaseEmbeddingService } from "../services/embeddingService.js";
 
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 
-export async function processPullRequest(pullRequest, repository) {
+export async function processContextualPullRequest(pullRequest, repository) {
   const owner = repository.owner.login;
   const repo = repository.name;
   const prNumber = pullRequest.number;
 
-  console.log(`📥 Processing PR #${prNumber} in ${owner}/${repo}`);
+  console.log(`📥 Processing PR #${prNumber} in ${owner}/${repo} with full context`);
 
   try {
+    const embeddingService = new CodebaseEmbeddingService(owner, repo);
+
+    // Get PR files
     const { data: files } = await octokit.pulls.listFiles({
       owner,
       repo,
@@ -19,39 +23,80 @@ export async function processPullRequest(pullRequest, repository) {
 
     console.log(`🗂️ Found ${files.length} changed file(s).`);
 
-    const commentTasks = files
-      .filter((file) => file.patch)
-      .map((file, idx) => {
-        console.log(`📄 File #${idx + 1}: ${file.filename}`);
-        return analyzeDiffAndComment(owner, repo, prNumber, file.filename, file.patch);
-      });
+    // Process each file with full context
+    for (const file of files) {
+      if (file.patch) {
+        console.log(`🔍 Analyzing ${file.filename} with codebase context`);
+        
+        const suggestions = await analyzeDiffWithContext(
+          file.patch,
+          file.filename,
+          owner,
+          repo
+        );
 
-    await Promise.all(commentTasks);
+        await octokit.issues.createComment({
+          owner,
+          repo,
+          issue_number: prNumber,
+          body: `### 🤖 Contextual AI Review for \`${file.filename}\`\n\n${suggestions}`,
+        });
 
-    console.log(`✅ All AI comments posted for PR #${prNumber}`);
+        console.log(`💬 Contextual comment posted for ${file.filename}`);
+      }
+    }
+
+    console.log(`✅ All contextual reviews posted for PR #${prNumber}`);
   } catch (error) {
-    console.error("❌ Error processing PR:", error.stack || error.message);
+    console.error("❌ Error processing contextual PR:", error);
   }
 }
 
-async function analyzeDiffAndComment(owner, repo, prNumber, filename, patch) {
+// Function to update embeddings when PR is merged
+export async function updateEmbeddingsOnMerge(pullRequest, repository) {
+  const owner = repository.owner.login;
+  const repo = repository.name;
+  const prNumber = pullRequest.number;
+
+  console.log(`🔄 Updating embeddings after PR #${prNumber} merge`);
+
   try {
-    console.log(`🔍 Analyzing ${filename}`);
-    console.log(`📄 Patch: ${patch}`);
-    const suggestions = await analyzeDiffWithAI(patch, filename);
+    const embeddingService = new CodebaseEmbeddingService(owner, repo);
 
-    console.log(`📝 AI suggestions ready for ${filename}`);
-
-    await octokit.issues.createComment({
+    // Get the merged files
+    const { data: files } = await octokit.pulls.listFiles({
       owner,
       repo,
-      issue_number: prNumber,
-      body: `### 🤖 AI Suggestion for \`${filename}\`\n\n${suggestions}`,
+      pull_number: prNumber,
     });
 
-    console.log(`💬 Comment posted for ${filename}`);
-  } catch (err) {
-    console.error(`❌ Error posting comment for ${filename}:`, err.stack || err.message);
+    // Update embeddings for each changed file
+    for (const file of files) {
+      if (file.status === 'modified' || file.status === 'added') {
+        // Get the latest file content
+        const { data: fileContent } = await octokit.repos.getContent({
+          owner,
+          repo,
+          path: file.filename,
+        });
+
+        const content = Buffer.from(fileContent.content, 'base64').toString('utf8');
+        
+        await embeddingService.updateFileEmbeddings(file.filename, content);
+      } else if (file.status === 'removed') {
+        await embeddingService.deleteFileEmbeddings(file.filename);
+      }
+    }
+
+    console.log(`✅ Embeddings updated for PR #${prNumber}`);
+  } catch (error) {
+    console.error("❌ Error updating embeddings:", error);
   }
 }
 
+// Main function to process pull requests - this should be called from your server
+export async function processPullRequest(pullRequest, repository) {
+  // You can choose which processing method to use
+  // For now, using the contextual approach
+  await processContextualPullRequest(pullRequest, repository);
+}

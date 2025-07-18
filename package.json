@@ -23,14 +23,13 @@
   "dependencies": {
     "@langchain/google-genai": "^0.2.14",
     "@langchain/openai": "^0.5.18",
+    "@langchain/textsplitters": "^0.1.0",
     "@octokit/rest": "^22.0.0",
+    "@pinecone-database/pinecone": "^6.1.1",
     "body-parser": "^2.2.0",
     "dotenv": "^17.1.0",
     "express": "^5.1.0",
-    "langchain": "^0.3.29",
-    "pg": "^8.16.3",
-    "pg-hstore": "^2.3.4",
-    "sequelize": "^6.37.7"
+    "langchain": "^0.3.29"
   },
   "devDependencies": {
     "jest": "^29.7.0",
