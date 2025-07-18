@@ -1,9 +1,6 @@
 import express from "express";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
-import { processPullRequest } from "./github/githubService.js";
-import sequelize from './config/sequelize.js';
-import ProjectSummary from './models/ProjectSummary.js';
 
 
 dotenv.config();
