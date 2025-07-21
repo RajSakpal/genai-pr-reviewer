@@ -16,8 +16,8 @@ app.post("/webhook", async (req, res) => {
   console.log("📄 Payload:", JSON.stringify(body, null, 2));
 
   const detail = body.detail;
-  const eventType = body.eventType;
-  const repositoryName = body.repositoryNames[0];
+  const eventType = detail.event;
+  const repositoryName = detail.repositoryNames[0];
 
   if (eventType === "pullRequestCreated") {
     try {
@@ -38,6 +38,7 @@ app.post("/webhook", async (req, res) => {
     res.sendStatus(204); // No action needed
   }
 });
+
 
 app.listen(PORT, () => {
   console.log(`🚀 CodeCommit webhook server running on http://localhost:${PORT}`);
