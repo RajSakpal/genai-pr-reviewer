@@ -17,7 +17,7 @@ app.post("/webhook", async (req, res) => {
 
   const detail = body.detail;
   const eventType = body.eventType;
-  const repositoryName = detail.repositoryNames[0];
+  const repositoryName = body.repositoryNames[0];
 
   if (eventType === "pullRequestCreated") {
     try {
