@@ -24,7 +24,6 @@
     "@aws-sdk/client-codecommit": "^3.848.0",
     "@langchain/google-genai": "^0.2.14",
     "@langchain/openai": "^0.5.18",
-    "@octokit/rest": "^22.0.0",
     "body-parser": "^2.2.0",
     "dotenv": "^17.1.0",
     "express": "^5.1.0",
