@@ -11,35 +11,47 @@ const PORT = process.env.PORT || 3000;
 app.use(bodyParser.json());
 
 app.post("/webhook", async (req, res) => {
-  const body = req.body;
-  console.log("📩 Received CodeCommit webhook event");
-  console.log("📄 Payload:", JSON.stringify(body, null, 2));
+  try {
+    const event = req.body;
+    console.log("📩 Received AWS CodeCommit EventBridge event");
+    console.log("📄 Complete Payload:", JSON.stringify(event, null, 2));
 
-  const detail = body.detail;
-  const eventType = detail.event;
-  const repositoryName = detail.repositoryNames[0];
+    // Extract details from the EventBridge structure
+    const eventType = event.detail?.event;
+    const repositoryName = event.detail?.repositoryNames?.[0];
+    
+    if (!eventType) {
+      console.error("❌ Missing event type in payload");
+      return res.status(400).send("Bad Request: Missing event type");
+    }
 
-  if (eventType === "pullRequestCreated") {
-    try {
+    if (eventType === "pullRequestCreated") {
       await processCodeCommitPullRequest({
         repositoryName,
-        pullRequestId: detail.pullRequestId,
-        sourceCommit: detail.sourceCommit,
-        destinationCommit: detail.destinationCommit,
-        sourceBranch: detail.sourceReference,
-        destinationBranch: detail.destinationReference,
+        pullRequestId: event.detail?.pullRequestId,
+        sourceCommit: event.detail?.sourceCommit,
+        destinationCommit: event.detail?.destinationCommit,
+        sourceBranch: event.detail?.sourceReference?.replace('refs/heads/', ''),
+        destinationBranch: event.detail?.destinationReference?.replace('refs/heads/', ''),
+        // Include additional context if needed
+        eventTime: event.time,
+        region: event.region,
+        rawEvent: event // Optional: include full event for debugging
       });
-      res.sendStatus(200);
-    } catch (err) {
-      console.error("❌ Error processing CodeCommit PR:", err.message);
-      res.status(500).send("Internal Server Error");
+      return res.sendStatus(200);
+    } else {
+      console.log(`ℹ️ No action needed for event type: ${eventType}`);
+      return res.sendStatus(204);
     }
-  } else {
-    res.sendStatus(204); // No action needed
+  } catch (err) {
+    console.error("❌ Error processing webhook:", err);
+    return res.status(500).json({
+      error: "Internal Server Error",
+      details: err.message
+    });
   }
 });
 
-
 app.listen(PORT, () => {
-  console.log(`🚀 CodeCommit webhook server running on http://localhost:${PORT}`);
+  console.log(`🚀 Webhook server running on http://localhost:${PORT}`);
 });
