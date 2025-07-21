@@ -1,5 +1,8 @@
 import { CodeCommitClient, GetDifferencesCommand } from "@aws-sdk/client-codecommit";
 import { analyzeDiffWithAI } from "../agents/langchainAgent.js";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const client = new CodeCommitClient({ region: process.env.AWS_REGION || "ap-south-1" });
 
