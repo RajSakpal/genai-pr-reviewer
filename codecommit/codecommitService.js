@@ -1,4 +1,4 @@
-import { CodeCommitClient, GetDifferencesCommand } from "@aws-sdk/client-codecommit";
+import { CodeCommitClient, GetDifferencesCommand, GetBlobCommand } from "@aws-sdk/client-codecommit";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -24,15 +24,31 @@ if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
 const client = new CodeCommitClient(clientConfig);
 
 /**
- * Main function to process a CodeCommit Pull Request and log changes
- * 
- * @param {Object} params - Pull request details
- * @param {string} params.repositoryName - Name of the CodeCommit repository
- * @param {string} params.pullRequestId - Unique identifier for the pull request
- * @param {string} params.sourceCommit - Commit SHA of the source branch (feature branch)
- * @param {string} params.destinationCommit - Commit SHA of the destination branch (target branch)
- * @param {string} params.sourceBranch - Source branch name
- * @param {string} params.destinationBranch - Destination branch name
+ * Fetch blob content from AWS CodeCommit
+ * @param {string} repositoryName - Name of the repository
+ * @param {string} blobId - Blob identifier
+ * @returns {Promise<string>} - File content as string
+ */
+export async function getBlobContent(repositoryName, blobId) {
+  try {
+    const response = await client.send(
+      new GetBlobCommand({
+        repositoryName,
+        blobId
+      })
+    );
+    
+    // Convert blob content to string
+    const content = Buffer.from(response.content).toString('utf-8');
+    return content;
+  } catch (error) {
+    console.error(`❌ Failed to fetch blob ${blobId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Main function to process a CodeCommit Pull Request and perform context-aware AI analysis
  */
 export async function processCodeCommitPullRequest({ 
   repositoryName, 
@@ -42,144 +58,233 @@ export async function processCodeCommitPullRequest({
   sourceBranch,
   destinationBranch 
 }) {
-  console.log(`📥 [START] Processing PR #${pullRequestId} in repo ${repositoryName}`);
-  console.log(`    Source Branch: ${sourceBranch || 'unknown'} (${sourceCommit})`);
-  console.log(`    Destination Branch: ${destinationBranch || 'unknown'} (${destinationCommit})`);
-
+  console.log(`📥 Processing PR #${pullRequestId} in ${repositoryName}`);
+  console.log(`   ${sourceBranch || 'unknown'} → ${destinationBranch || 'unknown'}`);
+  
   try {
-    const changedFiles = []; // Store files that were changed
-    const newFiles = [];     // Store files that were added
-    let pageCount = 0;       // Track pagination for debugging
-    let nextToken;           // AWS pagination token
+    const changedFiles = [];
+    const newFiles = [];
+    const deletedFiles = [];
+    let nextToken;
+    let totalDifferences = 0;
     
-    // Paginate through all differences (AWS limits results per page)
+    // Fetch all differences with pagination
     do {
-      pageCount++;
-      console.log(`\n🔎 [PAGE ${pageCount}] Fetching differences...`);
-      
-      // Get differences between commits using AWS CodeCommit API
       const response = await client.send(
         new GetDifferencesCommand({
           repositoryName,
-          beforeCommitSpecifier: destinationCommit, // What we're comparing FROM
-          afterCommitSpecifier: sourceCommit,       // What we're comparing TO
-          nextToken, // For pagination
+          beforeCommitSpecifier: destinationCommit,
+          afterCommitSpecifier: sourceCommit,
+          nextToken,
         })
       );
 
-      console.log(`    Found ${response.differences?.length || 0} differences in this page`);
-      
-      // Process each file difference in this page
-      response.differences?.forEach((diff, index) => {
+      totalDifferences += response.differences?.length || 0;
+
+      response.differences?.forEach((diff) => {
         const filePath = diff.afterBlob?.path || diff.beforeBlob?.path;
         
-        console.log(`\n    [DIFF ${index + 1}]`);
-        console.log(`      File: ${filePath}`);
-        console.log(`      Change Type: ${getChangeTypeLabel(diff.changeType)}`);
-        console.log(`      Before Blob: ${diff.beforeBlob?.blobId || 'None (new file)'}`);
-        console.log(`      After Blob: ${diff.afterBlob?.blobId || 'None (deleted file)'}`);
-        
-        // Categorize the changes
         if (diff.changeType === "A") {
-          // New file added
           newFiles.push({
             filename: filePath,
             changeType: diff.changeType,
             blobId: diff.afterBlob?.blobId
           });
-          console.log(`      ✨ Added to NEW FILES list`);
         } else if (diff.changeType === "M") {
-          // File modified
           changedFiles.push({
             filename: filePath,
             changeType: diff.changeType,
             beforeBlobId: diff.beforeBlob?.blobId,
             afterBlobId: diff.afterBlob?.blobId
           });
-          console.log(`      🔄 Added to MODIFIED FILES list`);
         } else if (diff.changeType === "D") {
-          console.log(`      🗑️ File deleted - logged but not tracked for analysis`);
+          deletedFiles.push({
+            filename: filePath,
+            changeType: diff.changeType,
+            beforeBlobId: diff.beforeBlob?.blobId
+          });
         }
       });
 
       nextToken = response.nextToken;
-    } while (nextToken); // Continue until all pages are fetched
+    } while (nextToken);
 
-    // Log comprehensive summary
-    console.log(`\n${'='.repeat(60)}`);
-    console.log(`📊 PULL REQUEST SUMMARY`);
-    console.log(`${'='.repeat(60)}`);
-    console.log(`Repository: ${repositoryName}`);
-    console.log(`Pull Request ID: ${pullRequestId}`);
-    console.log(`Source: ${sourceBranch || 'unknown'} → Destination: ${destinationBranch || 'unknown'}`);
-    console.log(`Total Changes: ${newFiles.length + changedFiles.length} files`);
-    
-    // Log new files
-    if (newFiles.length > 0) {
-      console.log(`\n✨ NEW FILES (${newFiles.length}):`);
-      newFiles.forEach((file, i) => {
-        console.log(`    ${i + 1}. ${file.filename}`);
-        console.log(`       └── Blob ID: ${file.blobId}`);
-      });
-    } else {
-      console.log(`\n✨ NEW FILES: None`);
+    // Log summary
+    console.log(`📊 Found ${totalDifferences} file changes:`);
+    console.log(`   ✨ ${newFiles.length} new, 🔄 ${changedFiles.length} modified, 🗑️ ${deletedFiles.length} deleted`);
+
+    // Early exit if no analyzable files
+    const allAnalyzableFiles = [...newFiles, ...changedFiles];
+    if (allAnalyzableFiles.length === 0) {
+      console.log(`⚠️ No files to analyze (only deletions)`);
+      return {
+        pullRequestId,
+        repositoryName,
+        sourceBranch,
+        destinationBranch,
+        sourceCommit,
+        destinationCommit,
+        summary: {
+          totalFiles: deletedFiles.length,
+          newFiles: 0,
+          modifiedFiles: 0,
+          deletedFiles: deletedFiles.length,
+          analyzedFiles: 0,
+          successfulAnalyses: 0,
+          failedAnalyses: 0,
+          contextualAnalyses: 0,
+          totalContextChunks: 0
+        },
+        newFiles: [],
+        changedFiles: [],
+        deletedFiles,
+        aiAnalysis: [],
+        processedAt: new Date().toISOString()
+      };
     }
 
-    // Log modified files
-    if (changedFiles.length > 0) {
-      console.log(`\n🔄 MODIFIED FILES (${changedFiles.length}):`);
-      changedFiles.forEach((file, i) => {
-        console.log(`    ${i + 1}. ${file.filename}`);
-        console.log(`       ├── Before: ${file.beforeBlobId}`);
-        console.log(`       └── After:  ${file.afterBlobId}`);
-      });
-    } else {
-      console.log(`\n🔄 MODIFIED FILES: None`);
-    }
-
-    console.log(`\n✅ [COMPLETE] Successfully logged all changes for PR #${pullRequestId}`);
+    // Start AI Analysis
+    console.log(`🤖 Starting AI analysis of ${allAnalyzableFiles.length} files...`);
     
-    // Return summary data for further processing if needed
+    const contextBranch = destinationBranch?.replace('refs/heads/', '') || 'main';
+    
+    // Dynamic import to avoid circular dependencies
+    const { analyzeFilesInBatches } = await import('../analyzePR.js');
+    
+    const analysisResults = await analyzeFilesInBatches(
+      allAnalyzableFiles, 
+      repositoryName, 
+      contextBranch, 
+      2
+    );
+
+    // Calculate statistics
+    const contextStats = analysisResults.reduce((stats, result) => {
+      if (result.success && result.context && result.context.hasContext) {
+        stats.withContext++;
+        stats.totalContextChunks += result.context.contextChunksCount || 0;
+        stats.totalRelatedFiles += result.context.relatedFiles?.length || 0;
+      }
+      return stats;
+    }, { withContext: 0, totalContextChunks: 0, totalRelatedFiles: 0 });
+
+    const successfulAnalyses = analysisResults.filter(r => r.success).length;
+    const failedAnalyses = analysisResults.filter(r => r.error).length;
+    const totalAnalysisTime = analysisResults.reduce((total, r) => total + (r.analysisTime || 0), 0);
+
+    // Final summary
+    console.log(`\n✅ Analysis Complete:`);
+    console.log(`   📈 ${successfulAnalyses}/${analysisResults.length} successful analyses`);
+    console.log(`   🔗 ${contextStats.withContext} files with context (${contextStats.totalContextChunks} chunks)`);
+    console.log(`   ⏱️ Total time: ${totalAnalysisTime}ms (avg: ${successfulAnalyses > 0 ? Math.round(totalAnalysisTime / successfulAnalyses) : 0}ms/file)`);
+
+    // Log failed analyses if any
+    if (failedAnalyses > 0) {
+      const failedFiles = analysisResults.filter(r => r.error).map(r => r.filename);
+      console.log(`   ⚠️ Failed to analyze: ${failedFiles.join(', ')}`);
+    }
+    
     return {
       pullRequestId,
       repositoryName,
       sourceBranch,
       destinationBranch,
+      sourceCommit,
+      destinationCommit,
+      contextBranch,
       summary: {
-        totalFiles: newFiles.length + changedFiles.length,
+        totalFiles: newFiles.length + changedFiles.length + deletedFiles.length,
         newFiles: newFiles.length,
-        modifiedFiles: changedFiles.length
+        modifiedFiles: changedFiles.length,
+        deletedFiles: deletedFiles.length,
+        analyzedFiles: analysisResults.length,
+        successfulAnalyses: successfulAnalyses,
+        failedAnalyses: failedAnalyses,
+        contextualAnalyses: contextStats.withContext,
+        totalContextChunks: contextStats.totalContextChunks,
+        totalRelatedFiles: contextStats.totalRelatedFiles,
+        totalAnalysisTime: totalAnalysisTime,
+        averageAnalysisTime: successfulAnalyses > 0 ? Math.round(totalAnalysisTime / successfulAnalyses) : 0
       },
       newFiles,
-      changedFiles
+      changedFiles,
+      deletedFiles,
+      aiAnalysis: analysisResults,
+      processedAt: new Date().toISOString()
     };
 
   } catch (err) {
-    console.error(`❌ [ERROR] Processing PR #${pullRequestId}:`);
-    console.error(`Error Type: ${err.name}`);
-    console.error(`Error Message: ${err.message}`);
-    if (err.code) {
-      console.error(`AWS Error Code: ${err.code}`);
-    }
-    console.error(`Stack Trace: ${err.stack}`);
+    console.error(`❌ Error processing PR #${pullRequestId}: ${err.message}`);
     throw err;
   }
 }
 
 /**
- * Helper function to get human-readable change type labels
- * @param {string} changeType - AWS CodeCommit change type (A, M, D)
- * @returns {string} - Human readable label
+ * Save analysis results to file system
  */
-function getChangeTypeLabel(changeType) {
-  switch (changeType) {
-    case 'A':
-      return 'ADDED (New File)';
-    case 'M':
-      return 'MODIFIED (Changed File)';
-    case 'D':
-      return 'DELETED (Removed File)';
-    default:
-      return `UNKNOWN (${changeType})`;
+export async function saveAnalysisResults(pullRequestData) {
+  try {
+    const fs = await import('fs/promises');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filename = `pr-analysis-${pullRequestData.repositoryName}-${pullRequestData.pullRequestId}-${timestamp}.json`;
+    
+    const cleanData = {
+      ...pullRequestData,
+      aiAnalysis: pullRequestData.aiAnalysis.map(analysis => ({
+        ...analysis,
+        errorDetails: analysis.errorDetails ? {
+          name: analysis.errorDetails.name,
+          message: analysis.errorDetails.message
+        } : undefined
+      }))
+    };
+    
+    await fs.writeFile(filename, JSON.stringify(cleanData, null, 2));
+    console.log(`📁 Analysis saved: ${filename}`);
+    
+    return filename;
+  } catch (error) {
+    console.error('❌ Failed to save analysis:', error.message);
+    throw error;
   }
+}
+
+/**
+ * Get summary statistics from analysis results
+ */
+export function getAnalysisSummary(analysisData) {
+  const { aiAnalysis = [], summary = {} } = analysisData;
+  
+  const byChangeType = aiAnalysis.reduce((counts, analysis) => {
+    const type = analysis.changeType || 'UNKNOWN';
+    counts[type] = (counts[type] || 0) + 1;
+    return counts;
+  }, {});
+  
+  const contextStats = aiAnalysis.reduce((stats, analysis) => {
+    if (analysis.success && analysis.context?.hasContext) {
+      stats.withContext++;
+    } else if (analysis.success) {
+      stats.withoutContext++;
+    }
+    return stats;
+  }, { withContext: 0, withoutContext: 0 });
+  
+  const topContextFiles = aiAnalysis
+    .filter(a => a.success && a.context?.hasContext)
+    .sort((a, b) => (b.context?.contextChunksCount || 0) - (a.context?.contextChunksCount || 0))
+    .slice(0, 5)
+    .map(a => ({
+      filename: a.filename,
+      contextChunks: a.context?.contextChunksCount || 0,
+      relatedFiles: a.context?.relatedFiles?.length || 0
+    }));
+  
+  return {
+    overview: summary,
+    byChangeType,
+    contextStats,
+    topContextFiles,
+    generatedAt: new Date().toISOString()
+  };
 }
