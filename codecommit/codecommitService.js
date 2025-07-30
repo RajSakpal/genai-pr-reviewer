@@ -1,4 +1,5 @@
 import { CodeCommitClient, GetDifferencesCommand, GetBlobCommand } from "@aws-sdk/client-codecommit";
+import { isCommentingEnabled } from "../utils/codecommitComments.js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -22,6 +23,9 @@ if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
 }
 
 const client = new CodeCommitClient(clientConfig);
+
+// Export client for use in comment service
+export { client };
 
 /**
  * Fetch blob content from AWS CodeCommit
@@ -48,7 +52,7 @@ export async function getBlobContent(repositoryName, blobId) {
 }
 
 /**
- * Main function to process a CodeCommit Pull Request and perform context-aware AI analysis
+ * Main function to process a CodeCommit Pull Request and perform context-aware AI analysis with comments
  */
 export async function processCodeCommitPullRequest({ 
   repositoryName, 
@@ -133,7 +137,9 @@ export async function processCodeCommitPullRequest({
           successfulAnalyses: 0,
           failedAnalyses: 0,
           contextualAnalyses: 0,
-          totalContextChunks: 0
+          totalContextChunks: 0,
+          commentsPosted: 0,
+          commentsFailed: 0
         },
         newFiles: [],
         changedFiles: [],
@@ -148,6 +154,20 @@ export async function processCodeCommitPullRequest({
     
     const contextBranch = destinationBranch?.replace('refs/heads/', '') || 'main';
     
+    // Prepare PR info for commenting with both commit IDs
+    const pullRequestInfo = isCommentingEnabled() ? {
+      pullRequestId: pullRequestId,
+      beforeCommitId: destinationCommit, // The base commit
+      afterCommitId: sourceCommit,       // The new commit
+      repositoryName: repositoryName
+    } : null;
+
+    if (pullRequestInfo) {
+      console.log(`💬 AI analysis comments will be posted to Changes tab for PR #${pullRequestId}`);
+    } else {
+      console.log(`⚠️ Comment posting disabled`);
+    }
+    
     // Dynamic import to avoid circular dependencies
     const { analyzeFilesInBatches } = await import('../analyzePR.js');
     
@@ -155,8 +175,22 @@ export async function processCodeCommitPullRequest({
       allAnalyzableFiles, 
       repositoryName, 
       contextBranch, 
-      2
+      2,
+      pullRequestInfo // Pass PR info for commenting
     );
+
+    // Calculate comment statistics
+    const commentStats = analysisResults.reduce((stats, result) => {
+      if (result.reviewComment && result.reviewComment.success) {
+        stats.successful++;
+      } else if (result.reviewComment && result.reviewComment.error && 
+                 result.reviewComment.error !== 'No PR info provided' && 
+                 result.reviewComment.error !== 'Commenting disabled' &&
+                 result.reviewComment.error !== 'File skipped') {
+        stats.failed++;
+      }
+      return stats;
+    }, { successful: 0, failed: 0 });
 
     // Calculate statistics
     const contextStats = analysisResults.reduce((stats, result) => {
@@ -176,6 +210,10 @@ export async function processCodeCommitPullRequest({
     console.log(`\n✅ Analysis Complete:`);
     console.log(`   📈 ${successfulAnalyses}/${analysisResults.length} successful analyses`);
     console.log(`   🔗 ${contextStats.withContext} files with context (${contextStats.totalContextChunks} chunks)`);
+    console.log(`   💬 ${commentStats.successful} comments posted to Changes tab`);
+    if (commentStats.failed > 0) {
+      console.log(`   ⚠️ ${commentStats.failed} comments failed`);
+    }
     console.log(`   ⏱️ Total time: ${totalAnalysisTime}ms (avg: ${successfulAnalyses > 0 ? Math.round(totalAnalysisTime / successfulAnalyses) : 0}ms/file)`);
 
     // Log failed analyses if any
@@ -204,7 +242,9 @@ export async function processCodeCommitPullRequest({
         totalContextChunks: contextStats.totalContextChunks,
         totalRelatedFiles: contextStats.totalRelatedFiles,
         totalAnalysisTime: totalAnalysisTime,
-        averageAnalysisTime: successfulAnalyses > 0 ? Math.round(totalAnalysisTime / successfulAnalyses) : 0
+        averageAnalysisTime: successfulAnalyses > 0 ? Math.round(totalAnalysisTime / successfulAnalyses) : 0,
+        commentsPosted: commentStats.successful,
+        commentsFailed: commentStats.failed
       },
       newFiles,
       changedFiles,

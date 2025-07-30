@@ -10,6 +10,7 @@ import {
   generateContextAwarePromptAddition 
 } from "./utils/changeAnalyzer.js";
 import { modifiedFileTemplate, newFileTemplate } from "./templates/promptTemplates.js";
+import { postAIAnalysisComment, isCommentingEnabled } from "./utils/codecommitComments.js";
 
 dotenv.config();
 
@@ -88,9 +89,9 @@ function extractKeyFindings(analysis) {
 }
 
 /**
- * Enhanced analyze function with hybrid AI support
+ * Enhanced analyze function with hybrid AI support and Changes tab comment posting
  */
-export async function analyzeFileWithAI(fileData, repositoryName, branchName = 'main') {
+export async function analyzeFileWithAI(fileData, repositoryName, branchName = 'main', pullRequestInfo = null) {
   const startTime = Date.now();
   
   try {
@@ -115,6 +116,7 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
         changeType: fileData.changeType,
         analysis: "Analysis skipped: Non-code file (not relevant for code review)",
         context: { hasContext: false, relatedFiles: [], contextChunksCount: 0, summary: "File type skipped." },
+        reviewComment: { success: false, error: 'File skipped' },
         analysisTime: Date.now() - startTime,
         error: false,
         skipped: true,
@@ -260,7 +262,7 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
     
     console.log(`   ✅ ${fileData.filename} completed (${analysisTime}ms, ${response.provider}${context.contextChunks.length ? `, ${context.contextChunks.length} context chunks` : ''})\n`);
     
-    return {
+    const result = {
       filename: fileData.filename,
       changeType: fileData.changeType,
       language: language,
@@ -280,6 +282,44 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
       aiProvider: response.provider, // 'gemini' or 'ollama'
       model: response.model
     };
+
+    // Post AI analysis comment to Changes tab if PR info is provided
+    if (pullRequestInfo && isCommentingEnabled() && result.success) {
+      try {
+        console.log(`      💬 Posting AI analysis comment to Changes tab...`);
+        
+        const commentResult = await postAIAnalysisComment({
+          repositoryName,
+          pullRequestId: pullRequestInfo.pullRequestId,
+          beforeCommitId: pullRequestInfo.beforeCommitId,
+          afterCommitId: pullRequestInfo.afterCommitId,
+          filePath: fileData.filename,
+          aiAnalysis: response.content
+        });
+        
+        result.reviewComment = commentResult;
+        
+        if (commentResult.success) {
+          console.log(`      ✅ AI analysis comment posted to Changes tab: ${commentResult.commentId}`);
+        } else {
+          console.log(`      ❌ Failed to post comment: ${commentResult.error}`);
+        }
+        
+      } catch (commentError) {
+        console.error(`      ⚠️ Comment posting failed:`, commentError.message);
+        result.reviewComment = {
+          success: false,
+          error: commentError.message
+        };
+      }
+    } else {
+      result.reviewComment = {
+        success: false,
+        error: !pullRequestInfo ? 'No PR info provided' : 'Commenting disabled'
+      };
+    }
+
+    return result;
     
   } catch (error) {
     const analysisTime = Date.now() - startTime;
@@ -291,6 +331,7 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
       analysis: `Analysis failed: ${error.message}`,
       keyFindings: { whatChanged: [], securityIssues: [], codeQuality: [], logicIssues: [], performance: [], suggestions: [] },
       context: { hasContext: false, relatedFiles: [], contextChunksCount: 0, summary: "Context unavailable due to error." },
+      reviewComment: { success: false, error: 'Analysis failed' },
       analysisTime: analysisTime,
       error: true,
       errorDetails: {
@@ -306,14 +347,20 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
 }
 
 /**
- * Enhanced batch analysis with hybrid AI support
+ * Enhanced batch analysis with hybrid AI support and Changes tab comment posting
  */
-export async function analyzeFilesInBatches(files, repositoryName, branchName = 'main', batchSize = 1) {
+export async function analyzeFilesInBatches(files, repositoryName, branchName = 'main', batchSize = 1, pullRequestInfo = null) {
   const results = [];
   const totalBatches = Math.ceil(files.length / batchSize);
   
   console.log(`🤖 Starting multi-language analysis of ${files.length} files`);
   console.log(`📋 Files to analyze: ${files.map(f => `${f.filename} (${f.changeType})`).join(', ')}\n`);
+  
+  if (pullRequestInfo && isCommentingEnabled()) {
+    console.log(`💬 AI analysis comments will be posted to Changes tab for PR #${pullRequestInfo.pullRequestId}`);
+  } else {
+    console.log(`⚠️ Comment posting disabled`);
+  }
   
   for (let i = 0; i < files.length; i += batchSize) {
     const batch = files.slice(i, i + batchSize);
@@ -323,7 +370,7 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
     batch.forEach(file => console.log(`   📄 ${file.filename} (${file.changeType})`));
     
     const batchPromises = batch.map(file => 
-      analyzeFileWithAI(file, repositoryName, branchName)
+      analyzeFileWithAI(file, repositoryName, branchName, pullRequestInfo)
     );
     
     const batchResults = await Promise.allSettled(batchPromises);
@@ -341,6 +388,7 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
             analysis: `Analysis returned invalid result structure`,
             keyFindings: { whatChanged: [], securityIssues: [], codeQuality: [], logicIssues: [], performance: [], suggestions: [] },
             context: { hasContext: false, relatedFiles: [], contextChunksCount: 0 },
+            reviewComment: { success: false, error: 'Invalid result structure' },
             error: true,
             timestamp: new Date().toISOString(),
             success: false,
@@ -355,6 +403,7 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
           analysis: `Batch processing failed: ${result.reason}`,
           keyFindings: { whatChanged: [], securityIssues: [], codeQuality: [], logicIssues: [], performance: [], suggestions: [] },
           context: { hasContext: false, relatedFiles: [], contextChunksCount: 0 },
+          reviewComment: { success: false, error: 'Batch processing failed' },
           error: true,
           timestamp: new Date().toISOString(),
           success: false,
@@ -371,6 +420,19 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
   const skippedAnalyses = results.filter(r => r.skipped);
   const failedAnalyses = results.filter(r => r.error);
   
+  // Calculate comment statistics
+  const commentStats = results.reduce((stats, result) => {
+    if (result.reviewComment && result.reviewComment.success) {
+      stats.successful++;
+    } else if (result.reviewComment && result.reviewComment.error && 
+               result.reviewComment.error !== 'No PR info provided' && 
+               result.reviewComment.error !== 'Commenting disabled' &&
+               result.reviewComment.error !== 'File skipped') {
+      stats.failed++;
+    }
+    return stats;
+  }, { successful: 0, failed: 0 });
+  
   // Enhanced final summary with language breakdown and AI provider stats
   console.log(`\n${'='.repeat(80)}`);
   console.log(`📊 FINAL MULTI-LANGUAGE ANALYSIS SUMMARY`);
@@ -379,6 +441,10 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
   console.log(`✅ Successful: ${successfulAnalyses.length}`);
   console.log(`⏭️ Skipped: ${skippedAnalyses.length}`);
   console.log(`❌ Failed: ${failedAnalyses.length}`);
+  console.log(`💬 Comments Posted to Changes Tab: ${commentStats.successful}`);
+  if (commentStats.failed > 0) {
+    console.log(`⚠️ Comments Failed: ${commentStats.failed}`);
+  }
   
   // Language breakdown
   const languageStats = successfulAnalyses.reduce((stats, result) => {
@@ -412,6 +478,7 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
       console.log(`   📝 Analysis length: ${result.analysis.length} characters`);
       console.log(`   ⏱️ Analysis time: ${result.analysisTime}ms`);
       console.log(`   🧠 Context used: ${result.contextUsed ? 'YES' : 'NO'}`);
+      console.log(`   💬 Comment posted to Changes tab: ${result.reviewComment.success ? 'YES' : 'NO'}`);
       
       if (result.keyFindings) {
         const totalFindings = Object.values(result.keyFindings).reduce((sum, arr) => sum + arr.length, 0);
