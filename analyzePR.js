@@ -10,7 +10,7 @@ import {
   generateContextAwarePromptAddition 
 } from "./utils/changeAnalyzer.js";
 import { modifiedFileTemplate, newFileTemplate } from "./templates/promptTemplates.js";
-import { postAIAnalysisComment, isCommentingEnabled } from "./utils/codecommitComments.js";
+import { postAIAnalysisComment, postLineSpecificIssues, isCommentingEnabled } from "./utils/codecommitComments.js";
 
 dotenv.config();
 
@@ -24,25 +24,78 @@ console.log(`   🤖 Ollama: Fallback provider`);
 console.log(`   🔄 Auto-switching enabled`);
 
 /**
- * Helper function to format AI response for logging
+ * Helper function to format AI response for logging (truncated version)
  */
 function formatAIResponseForLog(analysis, filename) {
   const maxLength = 300;
   const separator = "─".repeat(60);
   
   let formatted = `\n${separator}\n`;
-  formatted += `📝 AI REVIEW FOR: ${filename}\n`;
+  formatted += `📝 AI REVIEW SUMMARY FOR: ${filename}\n`;
   formatted += `${separator}\n`;
   
   if (analysis.length > maxLength) {
     formatted += analysis.substring(0, maxLength) + "...\n";
-    formatted += `[Full review: ${analysis.length} characters - see complete analysis in final results]\n`;
+    formatted += `[Truncated - Full response: ${analysis.length} characters - see complete analysis above]\n`;
   } else {
     formatted += analysis + "\n";
   }
   
   formatted += `${separator}`;
   return formatted;
+}
+
+/**
+ * Log complete AI response with enhanced formatting
+ */
+function logCompleteAIResponse(response, filename) {
+  const showFullResponse = process.env.LOG_FULL_AI_RESPONSE !== 'false'; // Default to true
+  
+  if (showFullResponse) {
+    console.log(`\n${'='.repeat(100)}`);
+    console.log(`🤖 COMPLETE AI ANALYSIS FOR: ${filename}`);
+    console.log(`${'='.repeat(100)}`);
+    console.log(`AI Provider: ${response.provider || 'unknown'}`);
+    console.log(`Model: ${response.model || 'unknown'}`);
+    console.log(`Response Length: ${response.content.length} characters`);
+    console.log(`Timestamp: ${new Date().toISOString()}`);
+    console.log(`${'='.repeat(100)}`);
+    console.log(response.content);
+    console.log(`${'='.repeat(100)}\n`);
+  }
+}
+
+/**
+ * Save complete AI response to file (optional)
+ */
+async function saveCompleteAIResponse(response, filename, pullRequestId) {
+  if (process.env.SAVE_AI_RESPONSES !== 'true') {
+    return;
+  }
+  
+  try {
+    const fs = await import('fs/promises');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeFilename = filename.replace(/[/\\]/g, '_').replace(/[^a-zA-Z0-9._-]/g, '');
+    const responseFilename = `ai-response-${pullRequestId || 'unknown'}-${safeFilename}-${timestamp}.txt`;
+    
+    const content = `AI Analysis Response
+====================
+File: ${filename}
+Provider: ${response.provider || 'unknown'}
+Model: ${response.model || 'unknown'}
+Timestamp: ${new Date().toISOString()}
+Response Length: ${response.content.length} characters
+
+Analysis:
+${response.content}
+`;
+    
+    await fs.writeFile(responseFilename, content);
+    console.log(`📄 Complete AI response saved: ${responseFilename}`);
+  } catch (error) {
+    console.error('❌ Failed to save AI response:', error.message);
+  }
 }
 
 /**
@@ -89,10 +142,12 @@ function extractKeyFindings(analysis) {
 }
 
 /**
- * Enhanced analyze function with hybrid AI support and Changes tab comment posting
+ * Enhanced analyze function with hybrid AI support and line-specific issue commenting
  */
 export async function analyzeFileWithAI(fileData, repositoryName, branchName = 'main', pullRequestInfo = null) {
   const startTime = Date.now();
+  let beforeContent = null;
+  let afterContent = null;
   
   try {
     // Skip certain file types
@@ -143,6 +198,7 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
       
       console.log(`      📖 Reading new file content...`);
       fileContent = await getBlobContent(repositoryName, fileData.blobId);
+      afterContent = fileContent; // Store for commenting
       
       console.log(`      🧠 Fetching context for new file...`);
       context = await getRelevantContext(repositoryName, branchName, fileData.filename, fileContent, 5);
@@ -164,7 +220,7 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
       }
       
       console.log(`      📖 Reading before/after content...`);
-      const [beforeContent, afterContent] = await Promise.all([
+      [beforeContent, afterContent] = await Promise.all([
         getBlobContent(repositoryName, fileData.beforeBlobId),
         getBlobContent(repositoryName, fileData.afterBlobId)
       ]);
@@ -233,10 +289,16 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
     
     const analysisTime = Date.now() - startTime;
     
+    // Log the complete AI response (untruncated)
+    logCompleteAIResponse(response, fileData.filename);
+    
+    // Save complete AI response to file if enabled
+    await saveCompleteAIResponse(response, fileData.filename, pullRequestInfo?.pullRequestId);
+    
     // Extract key findings
     const findings = extractKeyFindings(response.content);
     
-    // Log the detailed AI response
+    // Log the truncated summary for readability
     console.log(formatAIResponseForLog(response.content, fileData.filename));
     
     // Enhanced logging
@@ -279,31 +341,36 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
       analysisTime: analysisTime,
       timestamp: new Date().toISOString(),
       success: true,
-      aiProvider: response.provider, // 'gemini' or 'ollama'
+      aiProvider: response.provider,
       model: response.model
     };
 
-    // Post AI analysis comment to Changes tab if PR info is provided
+    // Post line-specific AI issues if PR info is provided
     if (pullRequestInfo && isCommentingEnabled() && result.success) {
       try {
-        console.log(`      💬 Posting AI analysis comment to Changes tab...`);
+        console.log(`      💬 Posting line-specific AI issue comments...`);
         
-        const commentResult = await postAIAnalysisComment({
+        const commentResults = await postLineSpecificIssues({
           repositoryName,
           pullRequestId: pullRequestInfo.pullRequestId,
           beforeCommitId: pullRequestInfo.beforeCommitId,
           afterCommitId: pullRequestInfo.afterCommitId,
           filePath: fileData.filename,
-          aiAnalysis: response.content
+          aiAnalysis: response.content,
+          beforeContent: beforeContent,
+          afterContent: afterContent
         });
         
-        result.reviewComment = commentResult;
+        const successfulComments = commentResults.filter(r => r.success).length;
+        console.log(`      ✅ Posted ${successfulComments} line-specific issue comments`);
         
-        if (commentResult.success) {
-          console.log(`      ✅ AI analysis comment posted to Changes tab: ${commentResult.commentId}`);
-        } else {
-          console.log(`      ❌ Failed to post comment: ${commentResult.error}`);
-        }
+        result.reviewComment = {
+          success: successfulComments > 0,
+          totalComments: commentResults.length,
+          successfulComments: successfulComments,
+          commentIds: commentResults.filter(r => r.success).map(r => r.commentId),
+          type: 'line-specific-issues'
+        };
         
       } catch (commentError) {
         console.error(`      ⚠️ Comment posting failed:`, commentError.message);
@@ -347,7 +414,7 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
 }
 
 /**
- * Enhanced batch analysis with hybrid AI support and Changes tab comment posting
+ * Enhanced batch analysis with hybrid AI support and line-specific issue commenting
  */
 export async function analyzeFilesInBatches(files, repositoryName, branchName = 'main', batchSize = 1, pullRequestInfo = null) {
   const results = [];
@@ -357,7 +424,7 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
   console.log(`📋 Files to analyze: ${files.map(f => `${f.filename} (${f.changeType})`).join(', ')}\n`);
   
   if (pullRequestInfo && isCommentingEnabled()) {
-    console.log(`💬 AI analysis comments will be posted to Changes tab for PR #${pullRequestInfo.pullRequestId}`);
+    console.log(`💬 Line-specific AI issue comments will be posted to Changes tab for PR #${pullRequestInfo.pullRequestId}`);
   } else {
     console.log(`⚠️ Comment posting disabled`);
   }
@@ -423,7 +490,7 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
   // Calculate comment statistics
   const commentStats = results.reduce((stats, result) => {
     if (result.reviewComment && result.reviewComment.success) {
-      stats.successful++;
+      stats.successful += result.reviewComment.totalComments || 1;
     } else if (result.reviewComment && result.reviewComment.error && 
                result.reviewComment.error !== 'No PR info provided' && 
                result.reviewComment.error !== 'Commenting disabled' &&
@@ -441,7 +508,7 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
   console.log(`✅ Successful: ${successfulAnalyses.length}`);
   console.log(`⏭️ Skipped: ${skippedAnalyses.length}`);
   console.log(`❌ Failed: ${failedAnalyses.length}`);
-  console.log(`💬 Comments Posted to Changes Tab: ${commentStats.successful}`);
+  console.log(`💬 Total Line-Specific Issue Comments Posted: ${commentStats.successful}`);
   if (commentStats.failed > 0) {
     console.log(`⚠️ Comments Failed: ${commentStats.failed}`);
   }
@@ -478,7 +545,9 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
       console.log(`   📝 Analysis length: ${result.analysis.length} characters`);
       console.log(`   ⏱️ Analysis time: ${result.analysisTime}ms`);
       console.log(`   🧠 Context used: ${result.contextUsed ? 'YES' : 'NO'}`);
-      console.log(`   💬 Comment posted to Changes tab: ${result.reviewComment.success ? 'YES' : 'NO'}`);
+      
+      const totalComments = result.reviewComment?.totalComments || (result.reviewComment?.success ? 1 : 0);
+      console.log(`   💬 Line-specific issue comments posted: ${totalComments}`);
       
       if (result.keyFindings) {
         const totalFindings = Object.values(result.keyFindings).reduce((sum, arr) => sum + arr.length, 0);
