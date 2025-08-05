@@ -1,6 +1,7 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { pipeline } from '@xenova/transformers';
 import { env } from '@xenova/transformers';
+import { searchGuidelines, formatGuidelinesForPrompt } from "../embedding/directGuidelineEmbeddingService.js";
 
 // Configure WASM backend (same as your existing setup)
 env.backends.onnx.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/";
@@ -159,6 +160,27 @@ export async function checkQdrantHealth() {
     return {
       status: 'unhealthy',
       error: error.message
+    };
+  }
+}
+
+export async function getDocumentGuidelines(language, codeContent, limit = 5) {
+  try {
+    const guidelines = await searchGuidelines(language, codeContent, limit);
+    
+    return {
+      hasGuidelines: guidelines.length > 0,
+      guidelines: guidelines,
+      count: guidelines.length,
+      formatted: formatGuidelinesForPrompt(guidelines)
+    };
+  } catch (error) {
+    console.error('Failed to get document guidelines:', error.message);
+    return {
+      hasGuidelines: false,
+      guidelines: [],
+      count: 0,
+      formatted: "Apply standard coding best practices."
     };
   }
 }

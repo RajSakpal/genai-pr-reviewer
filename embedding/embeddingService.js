@@ -88,8 +88,148 @@ const getRepoFiles = async (repoName, branchName, folderPath = '/') => {
   return fileList;
 };
 
+async function clearCollectionSafely(collectionName) {
+  try {
+    console.log(`🧹 Clearing old embeddings from collection: ${collectionName}`);
+    
+    // Method 1: Try to delete the entire collection and recreate it
+    try {
+      await qdrant.deleteCollection(collectionName);
+      console.log(`🗑️ Deleted collection: ${collectionName}`);
+      
+      // Recreate the collection
+      await qdrant.createCollection(collectionName, {
+        vectors: {
+          size: 384, // MiniLM-L6-v2 embedding dimension
+          distance: 'Cosine',
+        },
+        optimizers_config: {
+          default_segment_number: 2,
+        },
+        replication_factor: 1,
+      });
+      console.log(`✅ Recreated collection: ${collectionName}`);
+      return true;
+    } catch (deleteError) {
+      console.log(`⚠️ Could not delete collection, trying alternative method...`);
+      
+      // Method 2: If deletion fails, try to clear all points using filter
+      try {
+        // Get collection info to see how many points exist
+        const collectionInfo = await qdrant.getCollection(collectionName);
+        const pointCount = collectionInfo.points_count || 0;
+        
+        if (pointCount > 0) {
+          console.log(`🔍 Found ${pointCount} existing points, clearing them...`);
+          
+          // Delete all points using a filter that matches everything
+          await qdrant.delete(collectionName, {
+            wait: true,
+            filter: {
+              must: [
+                {
+                  key: 'repository',
+                  match: { any: [collectionName.split('_')[0]] } // This will match our repo
+                }
+              ]
+            }
+          });
+          console.log(`✅ Cleared ${pointCount} points from collection`);
+        } else {
+          console.log(`ℹ️ Collection is already empty`);
+        }
+        return true;
+      } catch (filterError) {
+        console.log(`⚠️ Filter deletion failed, trying scroll and delete...`);
+        
+        // Method 3: Scroll through all points and delete them in batches
+        try {
+          let offset = 0;
+          const limit = 100;
+          let hasMore = true;
+          let totalDeleted = 0;
+          
+          while (hasMore) {
+            const scrollResult = await qdrant.scroll(collectionName, {
+              limit: limit,
+              offset: offset,
+              with_payload: false,
+              with_vector: false
+            });
+            
+            if (scrollResult.points && scrollResult.points.length > 0) {
+              const pointIds = scrollResult.points.map(point => point.id);
+              
+              await qdrant.delete(collectionName, {
+                wait: true,
+                points: pointIds
+              });
+              
+              totalDeleted += pointIds.length;
+              console.log(`   🗑️ Deleted batch of ${pointIds.length} points (total: ${totalDeleted})`);
+              
+              if (scrollResult.points.length < limit) {
+                hasMore = false;
+              } else {
+                offset += limit;
+              }
+            } else {
+              hasMore = false;
+            }
+          }
+          
+          if (totalDeleted > 0) {
+            console.log(`✅ Successfully deleted ${totalDeleted} points via scroll method`);
+          } else {
+            console.log(`ℹ️ No points found to delete`);
+          }
+          return true;
+        } catch (scrollError) {
+          console.warn(`⚠️ All cleanup methods failed, proceeding with existing data:`, scrollError.message);
+          return false;
+        }
+      }
+    }
+  } catch (error) {
+    console.warn(`⚠️ Collection cleanup failed, proceeding anyway:`, error.message);
+    return false;
+  }
+}
+
 export async function createEmbeddingsForRepo(repoName, branchName) {
   console.log(`🚀 Starting embedding process for ${repoName}/${branchName}`);
+  
+  const collectionName = `${repoName}_${branchName}`.replace(/[\/:*?"<>|\s-]/g, '_').toLowerCase();
+  let collectionExisted = false;
+  
+  // Check if collection exists and clean up old embeddings
+  try {
+    await qdrant.getCollection(collectionName);
+    collectionExisted = true;
+    console.log(`📋 Collection ${collectionName} exists`);
+    
+    // Clear old embeddings
+    await clearCollectionSafely(collectionName);
+    
+  } catch (error) {
+    if (error.status === 404) {
+      console.log(`📋 Creating new collection: ${collectionName}`);
+      await qdrant.createCollection(collectionName, {
+        vectors: {
+          size: 384, // MiniLM-L6-v2 embedding dimension
+          distance: 'Cosine',
+        },
+        optimizers_config: {
+          default_segment_number: 2,
+        },
+        replication_factor: 1,
+      });
+      console.log(`✅ Created collection: ${collectionName}`);
+    } else {
+      console.error(`❌ Error checking collection:`, error.message);
+      throw error;
+    }
+  }
   
   // File retrieval
   console.time("File retrieval");
@@ -137,7 +277,8 @@ export async function createEmbeddingsForRepo(repoName, branchName) {
             chunkIndex: i,
             language: getFileExtension(file.path),
             repository: repoName,
-            branch: branchName
+            branch: branchName,
+            indexedAt: new Date().toISOString()
           },
         });
       });
@@ -186,32 +327,8 @@ export async function createEmbeddingsForRepo(repoName, branchName) {
 
   // Store in Qdrant
   console.log("💾 Storing in Qdrant...");
-  const collectionName = `${repoName}_${branchName}`.replace(/[\/:*?"<>|\s-]/g, '_').toLowerCase();
   
   try {
-    // Check if collection exists, create if not
-    try {
-      await qdrant.getCollection(collectionName);
-      console.log(`📋 Collection ${collectionName} already exists`);
-    } catch (error) {
-      if (error.status === 404) {
-        console.log(`📋 Creating new collection: ${collectionName}`);
-        await qdrant.createCollection(collectionName, {
-          vectors: {
-            size: 384, // MiniLM-L6-v2 embedding dimension
-            distance: 'Cosine',
-          },
-          optimizers_config: {
-            default_segment_number: 2,
-          },
-          replication_factor: 1,
-        });
-        console.log(`✅ Created collection: ${collectionName}`);
-      } else {
-        throw error;
-      }
-    }
-
     // Prepare points for batch insertion
     const points = embeddings.map((embedding) => ({
       id: embedding.id,
@@ -222,7 +339,8 @@ export async function createEmbeddingsForRepo(repoName, branchName) {
         chunkIndex: embedding.metadata.chunkIndex,
         language: embedding.metadata.language,
         repository: embedding.metadata.repository,
-        branch: embedding.metadata.branch
+        branch: embedding.metadata.branch,
+        indexedAt: embedding.metadata.indexedAt
       },
     }));
 
@@ -232,18 +350,23 @@ export async function createEmbeddingsForRepo(repoName, branchName) {
     
     for (let i = 0; i < points.length; i += batchSize) {
       const batch = points.slice(i, i + batchSize);
-      await qdrant.upsert(collectionName, {
-        wait: true,
-        points: batch,
-      });
-      insertedCount += batch.length;
-      
-      if (insertedCount % 500 === 0 || insertedCount === points.length) {
-        console.log(`   💾 Inserted ${insertedCount}/${points.length} points`);
+      try {
+        await qdrant.upsert(collectionName, {
+          wait: true,
+          points: batch,
+        });
+        insertedCount += batch.length;
+        
+        if (insertedCount % 500 === 0 || insertedCount === points.length) {
+          console.log(`   💾 Inserted ${insertedCount}/${points.length} points`);
+        }
+      } catch (batchError) {
+        console.error(`❌ Failed to insert batch ${Math.floor(i/batchSize) + 1}:`, batchError.message);
+        // Continue with next batch rather than failing completely
       }
     }
     
-    console.log(`✅ Successfully stored ${embeddings.length} embeddings in collection: ${collectionName}`);
+    console.log(`✅ Successfully stored ${insertedCount} embeddings in collection: ${collectionName}`);
   } catch (e) {
     console.error("❌ Failed to store embeddings:", e.message);
     throw e;
@@ -258,6 +381,7 @@ export async function createEmbeddingsForRepo(repoName, branchName) {
   console.log(`   🧠 Embeddings stored: ${embeddings.length}`);
   console.log(`   ❌ Failed embeddings: ${failedEmbeddings.length}`);
   console.log(`   🗃️ Qdrant collection: ${collectionName}`);
+  console.log(`   🔄 Collection existed: ${collectionExisted ? 'Yes (cleaned)' : 'No (created)'}`);
   
   // Show skip reasons if any
   if (skippedFiles.length > 0) {
@@ -276,6 +400,7 @@ export async function createEmbeddingsForRepo(repoName, branchName) {
     skippedFiles: skippedFiles.length,
     failedEmbeddings: failedEmbeddings.length,
     collectionName: collectionName,
+    collectionExisted,
     skipReasons: skippedFiles.reduce((acc, file) => {
       acc[file.reason] = (acc[file.reason] || 0) + 1;
       return acc;

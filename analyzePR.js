@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 import { getBlobContent } from "./codecommit/codecommitService.js";
-import { getRelevantContext, formatContextForPrompt } from "./utils/qdrantKnowledgeBase.js";
-import { HybridAIClient } from "./utils/HybridAIClient.js";
+import { getRelevantContext, formatContextForPrompt, getDocumentGuidelines } from "./utils/qdrantKnowledgeBase.js";
+import { GeminiAIClient } from "./utils/geminiClient.js";
 import { detectLanguage } from "./utils/languageDetector.js";
 import { 
   analyzeSpecificChanges, 
@@ -10,18 +10,55 @@ import {
   generateContextAwarePromptAddition 
 } from "./utils/changeAnalyzer.js";
 import { modifiedFileTemplate, newFileTemplate } from "./templates/promptTemplates.js";
-import { postAIAnalysisComment, postLineSpecificIssues, isCommentingEnabled } from "./utils/codecommitComments.js";
+import { postLineSpecificIssues, isCommentingEnabled } from "./utils/codecommitComments.js";
 
 dotenv.config();
 
 // Initialize Hybrid AI client
-const aiClient = new HybridAIClient();
+const aiClient = new GeminiAIClient();
 
 // Simple startup log without health check
 console.log(`✅ AI Client initialized:`);
 console.log(`   🌟 Gemini: Primary provider`);
-console.log(`   🤖 Ollama: Fallback provider`);
-console.log(`   🔄 Auto-switching enabled`);
+
+/**
+ * Simple function to log prompt and response to file
+ */
+async function logPromptAndResponse(prompt, response, filename, pullRequestId) {
+  try {
+    const fs = await import('fs/promises');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeFilename = filename.replace(/[/\\]/g, '_').replace(/[^a-zA-Z0-9._-]/g, '');
+    const logFilename = `ai-log-${pullRequestId || 'unknown'}-${safeFilename}-${timestamp}.txt`;
+    
+    const logContent = `AI CODE REVIEW LOG
+==================
+File: ${filename}
+PR ID: ${pullRequestId || 'unknown'}
+Timestamp: ${new Date().toISOString()}
+AI Provider: ${response.provider || 'unknown'}
+Model: ${response.model || 'unknown'}
+Prompt Length: ${prompt.length} characters
+Response Length: ${response.content.length} characters
+
+PROMPT SENT TO AI:
+==================
+${prompt}
+
+RESPONSE FROM AI:
+=================
+${response.content}
+
+LOG END
+=======
+`;
+    
+    await fs.writeFile(logFilename, logContent);
+    console.log(`📝 AI log saved: ${logFilename}`);
+  } catch (error) {
+    console.error('❌ Failed to save AI log:', error.message);
+  }
+}
 
 /**
  * Helper function to format AI response for logging (truncated version)
@@ -142,7 +179,7 @@ function extractKeyFindings(analysis) {
 }
 
 /**
- * Enhanced analyze function with hybrid AI support and line-specific issue commenting
+ * Enhanced analyze function with hybrid AI support, guidelines integration, and prompt/response logging
  */
 export async function analyzeFileWithAI(fileData, repositoryName, branchName = 'main', pullRequestInfo = null) {
   const startTime = Date.now();
@@ -171,6 +208,7 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
         changeType: fileData.changeType,
         analysis: "Analysis skipped: Non-code file (not relevant for code review)",
         context: { hasContext: false, relatedFiles: [], contextChunksCount: 0, summary: "File type skipped." },
+        guidelines: { hasGuidelines: false, count: 0, summary: "File type skipped." },
         reviewComment: { success: false, error: 'File skipped' },
         analysisTime: Date.now() - startTime,
         error: false,
@@ -187,6 +225,7 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
     let prompt;
     let fileContent;
     let context = { hasContext: false, contextChunks: [], relatedFiles: [], summary: "No context available." };
+    let guidelines = { hasGuidelines: false, guidelines: [], count: 0, formatted: "Apply standard coding best practices." };
     let diffSummary = '';
     let useContext = false;
     
@@ -202,6 +241,13 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
       
       console.log(`      🧠 Fetching context for new file...`);
       context = await getRelevantContext(repositoryName, branchName, fileData.filename, fileContent, 5);
+      
+      console.log(`      📋 Fetching relevant guidelines for ${language}...`);
+      guidelines = await getDocumentGuidelines(language, fileContent, 5);
+      if (guidelines.hasGuidelines) {
+        console.log(`      📚 Found ${guidelines.count} relevant guidelines`);
+      }
+      
       useContext = true;
       
       const contextSection = formatContextForPrompt(context);
@@ -210,6 +256,7 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
         filename: fileData.filename,
         content: fileContent,
         contextSection: contextSection,
+        guidelinesSection: guidelines.formatted,
         language: language
       });
       
@@ -247,6 +294,12 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
         context = { hasContext: false, contextChunks: [], relatedFiles: [], summary: "Context skipped - diff-focused analysis." };
       }
       
+      console.log(`      📋 Fetching relevant guidelines for ${language} changes...`);
+      guidelines = await getDocumentGuidelines(language, afterContent, 5);
+      if (guidelines.hasGuidelines) {
+        console.log(`      📚 Found ${guidelines.count} relevant guidelines for this change`);
+      }
+      
       fileContent = afterContent;
       
       const contextSection = formatContextForPrompt(context);
@@ -269,6 +322,7 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
         beforeContent: truncatedBefore,
         afterContent: truncatedAfter,
         contextSection: contextSection,
+        guidelinesSection: guidelines.formatted,
         contextPromptAddition: contextPromptAddition,
         contextAnalysisInstructions: contextAnalysisInstructions,
         language: language
@@ -287,6 +341,9 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
       top_k: 20
     });
     
+    // 📝 LOG PROMPT AND RESPONSE TO FILE
+    await logPromptAndResponse(prompt, response, fileData.filename, pullRequestInfo?.pullRequestId);
+    
     const analysisTime = Date.now() - startTime;
     
     // Log the complete AI response (untruncated)
@@ -301,13 +358,16 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
     // Log the truncated summary for readability
     console.log(formatAIResponseForLog(response.content, fileData.filename));
     
-    // Enhanced logging
+    // Enhanced logging with guidelines info
     console.log(`\n📊 KEY FINDINGS SUMMARY for ${fileData.filename}:`);
     if (diffSummary) {
       console.log(`   🔄 Changes: ${diffSummary}`);
     }
     if (useContext && context.hasContext) {
       console.log(`   🔗 Integration Context: ${context.contextChunks.length} chunks analyzed`);
+    }
+    if (guidelines.hasGuidelines) {
+      console.log(`   📋 Guidelines Applied: ${guidelines.count} relevant guidelines used`);
     }
     if (findings.whatChanged.length > 0) {
       console.log(`   📋 What Changed: ${findings.whatChanged.length} items identified`);
@@ -322,7 +382,7 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
       findings.suggestions.slice(0, 2).forEach(suggestion => console.log(`      - ${suggestion}`));
     }
     
-    console.log(`   ✅ ${fileData.filename} completed (${analysisTime}ms, ${response.provider}${context.contextChunks.length ? `, ${context.contextChunks.length} context chunks` : ''})\n`);
+    console.log(`   ✅ ${fileData.filename} completed (${analysisTime}ms, ${response.provider}${context.contextChunks.length ? `, ${context.contextChunks.length} context chunks` : ''}${guidelines.hasGuidelines ? `, ${guidelines.count} guidelines` : ''})\n`);
     
     const result = {
       filename: fileData.filename,
@@ -337,6 +397,11 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
         relatedFiles: context.relatedFiles,
         contextChunksCount: context.contextChunks.length,
         summary: context.summary
+      },
+      guidelines: {
+        hasGuidelines: guidelines.hasGuidelines,
+        count: guidelines.count,
+        summary: guidelines.hasGuidelines ? `Applied ${guidelines.count} relevant guidelines` : "No specific guidelines applied"
       },
       analysisTime: analysisTime,
       timestamp: new Date().toISOString(),
@@ -398,6 +463,7 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
       analysis: `Analysis failed: ${error.message}`,
       keyFindings: { whatChanged: [], securityIssues: [], codeQuality: [], logicIssues: [], performance: [], suggestions: [] },
       context: { hasContext: false, relatedFiles: [], contextChunksCount: 0, summary: "Context unavailable due to error." },
+      guidelines: { hasGuidelines: false, count: 0, summary: "Guidelines unavailable due to error." },
       reviewComment: { success: false, error: 'Analysis failed' },
       analysisTime: analysisTime,
       error: true,
@@ -455,6 +521,7 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
             analysis: `Analysis returned invalid result structure`,
             keyFindings: { whatChanged: [], securityIssues: [], codeQuality: [], logicIssues: [], performance: [], suggestions: [] },
             context: { hasContext: false, relatedFiles: [], contextChunksCount: 0 },
+            guidelines: { hasGuidelines: false, count: 0, summary: "Invalid result structure." },
             reviewComment: { success: false, error: 'Invalid result structure' },
             error: true,
             timestamp: new Date().toISOString(),
@@ -470,6 +537,7 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
           analysis: `Batch processing failed: ${result.reason}`,
           keyFindings: { whatChanged: [], securityIssues: [], codeQuality: [], logicIssues: [], performance: [], suggestions: [] },
           context: { hasContext: false, relatedFiles: [], contextChunksCount: 0 },
+          guidelines: { hasGuidelines: false, count: 0, summary: "Batch processing failed." },
           reviewComment: { success: false, error: 'Batch processing failed' },
           error: true,
           timestamp: new Date().toISOString(),
@@ -500,6 +568,15 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
     return stats;
   }, { successful: 0, failed: 0 });
   
+  // Calculate guidelines statistics
+  const guidelinesStats = results.reduce((stats, result) => {
+    if (result.guidelines && result.guidelines.hasGuidelines) {
+      stats.applied += result.guidelines.count;
+      stats.filesWithGuidelines++;
+    }
+    return stats;
+  }, { applied: 0, filesWithGuidelines: 0 });
+  
   // Enhanced final summary with language breakdown and AI provider stats
   console.log(`\n${'='.repeat(80)}`);
   console.log(`📊 FINAL MULTI-LANGUAGE ANALYSIS SUMMARY`);
@@ -509,6 +586,7 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
   console.log(`⏭️ Skipped: ${skippedAnalyses.length}`);
   console.log(`❌ Failed: ${failedAnalyses.length}`);
   console.log(`💬 Total Line-Specific Issue Comments Posted: ${commentStats.successful}`);
+  console.log(`📋 Total Guidelines Applied: ${guidelinesStats.applied} across ${guidelinesStats.filesWithGuidelines} files`);
   if (commentStats.failed > 0) {
     console.log(`⚠️ Comments Failed: ${commentStats.failed}`);
   }
@@ -545,6 +623,7 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
       console.log(`   📝 Analysis length: ${result.analysis.length} characters`);
       console.log(`   ⏱️ Analysis time: ${result.analysisTime}ms`);
       console.log(`   🧠 Context used: ${result.contextUsed ? 'YES' : 'NO'}`);
+      console.log(`   📋 Guidelines applied: ${result.guidelines.hasGuidelines ? result.guidelines.count : 0}`);
       
       const totalComments = result.reviewComment?.totalComments || (result.reviewComment?.success ? 1 : 0);
       console.log(`   💬 Line-specific issue comments posted: ${totalComments}`);
