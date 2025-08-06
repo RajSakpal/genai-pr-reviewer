@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import { getBlobContent } from "./codecommit/codecommitService.js";
 import { getRelevantContext, formatContextForPrompt, getDocumentGuidelines } from "./utils/qdrantKnowledgeBase.js";
 import { GeminiAIClient } from "./utils/geminiClient.js";
+import {AnthropicAIClient} from "./utils/anthropicClient.js";
 import { detectLanguage } from "./utils/languageDetector.js";
 import { 
   analyzeSpecificChanges, 
@@ -14,12 +15,11 @@ import { postLineSpecificIssues, isCommentingEnabled } from "./utils/codecommitC
 
 dotenv.config();
 
-// Initialize Hybrid AI client
 const aiClient = new GeminiAIClient();
+// const aiClient = new AnthropicAIClient();
 
 // Simple startup log without health check
 console.log(`✅ AI Client initialized:`);
-console.log(`   🌟 Gemini: Primary provider`);
 
 /**
  * Simple function to log prompt and response to file

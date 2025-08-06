@@ -24,6 +24,7 @@
   "dependencies": {
     "@aws-sdk/client-codecommit": "^3.848.0",
     "@chroma-core/default-embed": "^0.1.8",
+    "@langchain/anthropic": "^0.3.25",
     "@langchain/google-genai": "^0.2.14",
     "@langchain/openai": "^0.5.18",
     "@qdrant/js-client-rest": "^1.15.0",
