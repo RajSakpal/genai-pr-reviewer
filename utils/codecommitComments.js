@@ -28,7 +28,6 @@ export async function postInlineFileComment({
     });
 
     const response = await client.send(command);
-    console.log(`💬 Inline comment posted to ${filePath} line ${line}`);
     return {
       success: true,
       commentId: response.comment?.commentId,
@@ -78,9 +77,49 @@ function getChangedLines(beforeContent, afterContent) {
 }
 
 /**
- * Extract line-specific issues from AI analysis (Enhanced for your AI format)
+ * Use the enhanced keyFindings from analyzePR.js instead of duplicating extraction logic
  */
-function extractLineSpecificIssues(aiAnalysis) {
+function extractLineSpecificIssuesFromKeyFindings(keyFindings, aiAnalysisText) {
+  const issues = [];
+  
+  // Use the already-extracted lineSpecificIssues from the enhanced analyzer
+  if (keyFindings.lineSpecificIssues && keyFindings.lineSpecificIssues.length > 0) {
+    keyFindings.lineSpecificIssues.forEach(issue => {
+      const processedIssue = {
+        line: issue.line,
+        type: issue.type || 'Code Review',
+        severity: issue.severity?.toLowerCase() || 'medium',
+        problem: issue.description || 'Issue identified',
+        fix: generateFixSuggestion(issue.type, issue.description),
+        originalType: issue.type
+      };
+      
+      // Add appropriate icon
+      const issueAnalysis = analyzeIssueTypeAndIcon(issue.type, issue.description);
+      processedIssue.icon = issueAnalysis.icon;
+      processedIssue.type = issueAnalysis.type;
+      
+      issues.push(processedIssue);
+    });
+  }
+  
+  // Fallback: If no pre-extracted issues, try parsing the raw AI text (legacy support)
+  if (issues.length === 0 && aiAnalysisText) {
+    return extractLineSpecificIssuesLegacy(aiAnalysisText);
+  }
+  
+  // Remove duplicates and sort by line number
+  const uniqueIssues = issues.filter((issue, index, self) => 
+    index === self.findIndex(i => i.line === issue.line && i.problem === issue.problem)
+  ).sort((a, b) => a.line - b.line);
+  
+  return uniqueIssues;
+}
+
+/**
+ * Legacy extraction method (kept as fallback)
+ */
+function extractLineSpecificIssuesLegacy(aiAnalysis) {
   const issues = [];
   
   if (!aiAnalysis || typeof aiAnalysis !== 'string') {
@@ -89,7 +128,7 @@ function extractLineSpecificIssues(aiAnalysis) {
   
   const analysisLines = aiAnalysis.split('\n');
   
-  // Enhanced patterns to match your AI response format
+  // Enhanced patterns to match AI response format
   const linePatterns = [
     // Pattern 1: - **Line 38: Code Smell** - Description
     /^\s*-\s*\*\*Line\s+(\d+):\s*([^*]+?)\*\*\s*-\s*(.+)$/i,
@@ -123,8 +162,6 @@ function extractLineSpecificIssues(aiAnalysis) {
     }
     
     if (match && lineNumber && lineNumber > 0) {
-      console.log(`      🔍 Found issue: Line ${lineNumber} - ${issueType} - ${description.substring(0, 50)}...`);
-      
       // Look for fix and severity in following lines
       let severity = 'medium';
       let fix = '';
@@ -178,21 +215,13 @@ function extractLineSpecificIssues(aiAnalysis) {
     }
   }
   
-  // Remove duplicates and sort by line number
-  const uniqueIssues = issues.filter((issue, index, self) => 
+  return issues.filter((issue, index, self) => 
     index === self.findIndex(i => i.line === issue.line && i.problem === issue.problem)
   ).sort((a, b) => a.line - b.line);
-  
-  console.log(`      📊 Extracted ${uniqueIssues.length} line-specific issues from AI analysis`);
-  uniqueIssues.forEach(issue => {
-    console.log(`         Line ${issue.line}: ${issue.type} - ${issue.severity.toUpperCase()}`);
-  });
-  
-  return uniqueIssues;
 }
 
 /**
- * Analyze issue type and assign appropriate icon (Enhanced for your AI format)
+ * Analyze issue type and assign appropriate icon (Enhanced for keyFindings format)
  */
 function analyzeIssueTypeAndIcon(issueType, description) {
   const lowerType = (issueType || '').toLowerCase();
@@ -204,7 +233,8 @@ function analyzeIssueTypeAndIcon(issueType, description) {
   // Enhanced issue type detection
   if (lowerType.includes('security') || lowerDesc.includes('security') ||
       lowerDesc.includes('vulnerability') || lowerDesc.includes('credential') ||
-      lowerDesc.includes('password') || lowerDesc.includes('injection')) {
+      lowerDesc.includes('password') || lowerDesc.includes('injection') ||
+      lowerType.includes('unauthorized')) {
     type = 'Security Issue';
     icon = '🔒';
   } else if (lowerType.includes('performance') || lowerDesc.includes('performance') ||
@@ -215,23 +245,29 @@ function analyzeIssueTypeAndIcon(issueType, description) {
   } else if (lowerType.includes('logic') || lowerType.includes('bug') ||
              lowerDesc.includes('null') || lowerDesc.includes('exception') ||
              lowerDesc.includes('error') || lowerDesc.includes('crash') ||
-             lowerType.includes('potential logic issue')) {
+             lowerType.includes('incomplete update') || lowerType.includes('dead code')) {
     type = 'Logic Issue';
     icon = '🐛';
-  } else if (lowerType.includes('code smell') || lowerType.includes('quality') || 
+  } else if (lowerType.includes('code quality') || lowerType.includes('quality') || 
              lowerType.includes('style') || lowerDesc.includes('naming') || 
              lowerDesc.includes('convention') || lowerDesc.includes('maintainability') || 
-             lowerDesc.includes('readability') || lowerDesc.includes('unclear')) {
+             lowerDesc.includes('readability') || lowerDesc.includes('unclear') ||
+             lowerType.includes('unused')) {
     type = 'Code Quality';
     icon = '📝';
-  } else if (lowerType.includes('unnecessary import') || lowerType.includes('import') ||
-             lowerDesc.includes('import') || lowerDesc.includes('unused')) {
+  } else if (lowerType.includes('unused import') || lowerType.includes('import') ||
+             lowerDesc.includes('import') || lowerDesc.includes('unused') ||
+             lowerType.includes('dead code')) {
     type = 'Code Cleanup';
     icon = '🧹';
   } else if (lowerType.includes('documentation') || lowerDesc.includes('comment') ||
              lowerDesc.includes('javadoc') || lowerDesc.includes('docs')) {
     type = 'Documentation';
     icon = '📚';
+  } else if (lowerType.includes('business logic') || lowerDesc.includes('business') ||
+             lowerDesc.includes('functional')) {
+    type = 'Business Logic';
+    icon = '📊';
   }
   
   return { type, icon };
@@ -244,7 +280,22 @@ function generateFixSuggestion(issueType, description) {
   const lowerType = (issueType || '').toLowerCase();
   const lowerDesc = (description || '').toLowerCase();
   
-  // Specific fixes for your AI's common issue types
+  // Enhanced fixes for common AI issue types
+  if (lowerType.includes('incomplete update')) {
+    return 'Complete the update by including all necessary field modifications or add proper validation';
+  }
+  
+  if (lowerType.includes('dead code') || lowerType.includes('unused')) {
+    return 'Remove the unused code or provide proper documentation explaining its purpose';
+  }
+  
+  if (lowerType.includes('business logic')) {
+    if (lowerDesc.includes('price')) {
+      return 'Verify if this business logic change is intentional and document the reasoning';
+    }
+    return 'Review the business logic change and ensure it meets requirements';
+  }
+  
   if (lowerType.includes('code smell')) {
     if (lowerDesc.includes('tempmethod') || lowerDesc.includes('unclear purpose')) {
       return 'Remove the method if not needed, or rename it to be more descriptive and add proper documentation';
@@ -252,18 +303,10 @@ function generateFixSuggestion(issueType, description) {
     return 'Refactor the code to improve clarity and remove code smells';
   }
   
-  if (lowerType.includes('unnecessary import') || lowerType.includes('import')) {
+  if (lowerType.includes('unused import') || lowerType.includes('import')) {
     return 'Remove the unused import statement';
   }
   
-  if (lowerType.includes('potential logic issue')) {
-    if (lowerDesc.includes('empty') || lowerDesc.includes('unintended')) {
-      return 'Remove the problematic code or add proper validation and documentation';
-    }
-    return 'Review the logic and add appropriate safeguards';
-  }
-  
-  // Existing logic from before...
   if (lowerType.includes('security')) {
     if (lowerDesc.includes('password') || lowerDesc.includes('credential')) {
       return 'Move sensitive data to environment variables or secure configuration';
@@ -334,7 +377,7 @@ function formatProfessionalComment(issue) {
 }
 
 /**
- * Post AI-identified line-specific issues as professional inline comments
+ * Post AI-identified line-specific issues using enhanced keyFindings
  */
 export async function postLineSpecificIssues({
   repositoryName,
@@ -344,13 +387,14 @@ export async function postLineSpecificIssues({
   filePath,
   aiAnalysis,
   beforeContent,
-  afterContent
+  afterContent,
+  keyFindings = null  // Accept pre-processed keyFindings
 }) {
   const results = [];
   
   try {
     // Validate inputs
-    if (!repositoryName || !pullRequestId || !filePath || !aiAnalysis) {
+    if (!repositoryName || !pullRequestId || !filePath) {
       throw new Error('Missing required parameters for posting comments');
     }
     
@@ -358,15 +402,17 @@ export async function postLineSpecificIssues({
     let changedLines = [];
     if (beforeContent && afterContent) {
       changedLines = getChangedLines(beforeContent, afterContent);
-      console.log(`      📊 Detected ${changedLines.length} changed lines in ${filePath}`);
     }
     
-    // Extract line-specific issues from AI analysis
-    const lineIssues = extractLineSpecificIssues(aiAnalysis);
-    console.log(`      🤖 AI identified ${lineIssues.length} line-specific issues`);
+    // Use enhanced keyFindings if available, otherwise fall back to text parsing
+    let lineIssues = [];
+    if (keyFindings) {
+      lineIssues = extractLineSpecificIssuesFromKeyFindings(keyFindings, aiAnalysis);
+    } else {
+      lineIssues = extractLineSpecificIssuesLegacy(aiAnalysis);
+    }
     
     if (lineIssues.length === 0) {
-      console.log(`      ✅ No line-specific issues identified by AI for ${filePath}`);
       return [{
         success: true,
         message: 'No line-specific issues identified',
@@ -374,23 +420,10 @@ export async function postLineSpecificIssues({
       }];
     }
     
-    // For modified files, optionally filter to only changed lines
-    let issuesToPost = lineIssues;
-    if (beforeContent && afterContent && changedLines.length > 0) {
-      const changedLineNumbers = changedLines.map(cl => cl.lineNumber);
-      console.log(`      🔍 Changed line numbers: ${changedLineNumbers.join(', ')}`);
-      
-      // Log which issues are on changed vs context lines
-      issuesToPost.forEach(issue => {
-        const isOnChangedLine = changedLineNumbers.includes(issue.line);
-        console.log(`      📍 Issue on line ${issue.line}: ${isOnChangedLine ? 'CHANGED' : 'CONTEXT'} - ${issue.type}`);
-      });
-    }
-    
     // Limit to prevent spam
     const maxComments = 10;
+    let issuesToPost = lineIssues;
     if (issuesToPost.length > maxComments) {
-      console.log(`      ⚠️ Limiting to ${maxComments} most critical issues (${issuesToPost.length} total found)`);
       issuesToPost = issuesToPost
         .sort((a, b) => {
           const severityOrder = { 'critical': 4, 'high': 3, 'medium': 2, 'low': 1 };
@@ -420,7 +453,7 @@ export async function postLineSpecificIssues({
         await new Promise(resolve => setTimeout(resolve, 200));
         
       } catch (commentError) {
-        console.error(`      ❌ Failed to post comment for line ${issue.line}:`, commentError.message);
+        console.error(`❌ Failed to post comment for line ${issue.line}:`, commentError.message);
         results.push({
           success: false,
           error: commentError.message,
@@ -430,11 +463,8 @@ export async function postLineSpecificIssues({
       }
     }
     
-    const successfulComments = results.filter(r => r.success).length;
-    console.log(`      ✅ Posted ${successfulComments}/${issuesToPost.length} line-specific issue comments for ${filePath}`);
-    
   } catch (error) {
-    console.error(`      ❌ Failed to post line-specific issue comments for ${filePath}:`, error.message);
+    console.error(`❌ Failed to post line-specific issue comments for ${filePath}:`, error.message);
     results.push({
       success: false,
       error: error.message,

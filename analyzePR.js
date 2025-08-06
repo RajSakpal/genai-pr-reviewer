@@ -18,9 +18,6 @@ dotenv.config();
 const aiClient = new GeminiAIClient();
 // const aiClient = new AnthropicAIClient();
 
-// Simple startup log without health check
-console.log(`✅ AI Client initialized:`);
-
 /**
  * Simple function to log prompt and response to file
  */
@@ -54,51 +51,8 @@ LOG END
 `;
     
     await fs.writeFile(logFilename, logContent);
-    console.log(`📝 AI log saved: ${logFilename}`);
   } catch (error) {
     console.error('❌ Failed to save AI log:', error.message);
-  }
-}
-
-/**
- * Helper function to format AI response for logging (truncated version)
- */
-function formatAIResponseForLog(analysis, filename) {
-  const maxLength = 300;
-  const separator = "─".repeat(60);
-  
-  let formatted = `\n${separator}\n`;
-  formatted += `📝 AI REVIEW SUMMARY FOR: ${filename}\n`;
-  formatted += `${separator}\n`;
-  
-  if (analysis.length > maxLength) {
-    formatted += analysis.substring(0, maxLength) + "...\n";
-    formatted += `[Truncated - Full response: ${analysis.length} characters - see complete analysis above]\n`;
-  } else {
-    formatted += analysis + "\n";
-  }
-  
-  formatted += `${separator}`;
-  return formatted;
-}
-
-/**
- * Log complete AI response with enhanced formatting
- */
-function logCompleteAIResponse(response, filename) {
-  const showFullResponse = process.env.LOG_FULL_AI_RESPONSE !== 'false'; // Default to true
-  
-  if (showFullResponse) {
-    console.log(`\n${'='.repeat(100)}`);
-    console.log(`🤖 COMPLETE AI ANALYSIS FOR: ${filename}`);
-    console.log(`${'='.repeat(100)}`);
-    console.log(`AI Provider: ${response.provider || 'unknown'}`);
-    console.log(`Model: ${response.model || 'unknown'}`);
-    console.log(`Response Length: ${response.content.length} characters`);
-    console.log(`Timestamp: ${new Date().toISOString()}`);
-    console.log(`${'='.repeat(100)}`);
-    console.log(response.content);
-    console.log(`${'='.repeat(100)}\n`);
   }
 }
 
@@ -129,14 +83,123 @@ ${response.content}
 `;
     
     await fs.writeFile(responseFilename, content);
-    console.log(`📄 Complete AI response saved: ${responseFilename}`);
   } catch (error) {
     console.error('❌ Failed to save AI response:', error.message);
   }
 }
 
+// **HELPER FUNCTIONS FOR ENHANCED EXTRACTION**
+
+function detectSection(text, sectionName, keywords) {
+  const lowerText = text.toLowerCase();
+  return keywords.some(keyword => 
+    lowerText.includes(keyword) && 
+    (lowerText.includes('**') || lowerText.includes('#') || lowerText.includes(':'))
+  );
+}
+
+function extractLineSpecificIssue(text) {
+  // Enhanced regex patterns for line-specific issues
+  const patterns = [
+    /(?:line\s+)?(\d+):\s*\[([^\]]+)\]\s*[-–—]\s*(.+)/i,
+    /(?:line\s+)?(\d+):\s*([^-–—]+)[-–—]\s*(.+)/i,
+    /(?:line\s+)?(\d+)\s*[-–—]\s*([^:]+):\s*(.+)/i,
+    /(?:line\s+)?(\d+)\s*:\s*(.+?)(?:\s*\(([^)]+)\))?/i
+  ];
+  
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      return {
+        line: parseInt(match[1]),
+        type: match[2] ? match[2].trim() : 'Issue',
+        description: match[3] ? match[3].trim() : match[2].trim(),
+        severity: extractSeverity(text)
+      };
+    }
+  }
+  
+  return null;
+}
+
+function extractNumberedItem(text) {
+  const match = text.match(/^\d+\.\s*(.+)/);
+  return match ? match[1].trim() : null;
+}
+
+function extractBulletPoint(text) {
+  const match = text.match(/^[-•*]\s*(.+)/);
+  return match ? match[1].trim() : null;
+}
+
+function extractGeneralIssue(text) {
+  const issuePatterns = [
+    { pattern: /security\s+(issue|problem|vulnerability)/i, type: 'Security' },
+    { pattern: /performance\s+(issue|problem)/i, type: 'Performance' },
+    { pattern: /code\s+quality\s+(issue|problem)/i, type: 'Code Quality' },
+    { pattern: /logic\s+(error|issue|problem)/i, type: 'Logic' },
+    { pattern: /null\s+pointer/i, type: 'Logic' },
+    { pattern: /memory\s+leak/i, type: 'Performance' },
+    { pattern: /sql\s+injection/i, type: 'Security' },
+    { pattern: /unused\s+(variable|method|import)/i, type: 'Code Quality' }
+  ];
+  
+  for (const { pattern, type } of issuePatterns) {
+    if (pattern.test(text)) {
+      return {
+        type: type,
+        description: text.trim()
+      };
+    }
+  }
+  
+  return null;
+}
+
+function categorizeIssueType(type) {
+  const lowerType = type.toLowerCase();
+  
+  if (lowerType.includes('security') || lowerType.includes('vulnerability')) return 'securityIssues';
+  if (lowerType.includes('performance') || lowerType.includes('memory') || lowerType.includes('cpu')) return 'performance';
+  if (lowerType.includes('logic') || lowerType.includes('bug') || lowerType.includes('error')) return 'logicIssues';
+  if (lowerType.includes('quality') || lowerType.includes('maintainability') || lowerType.includes('readability')) return 'codeQuality';
+  if (lowerType.includes('business') || lowerType.includes('functional')) return 'businessLogicIssues';
+  if (lowerType.includes('integration') || lowerType.includes('dependency')) return 'integrationIssues';
+  
+  return 'suggestions'; // Default fallback
+}
+
+function extractSeverity(text) {
+  const lowerText = text.toLowerCase();
+  if (lowerText.includes('critical')) return 'Critical';
+  if (lowerText.includes('high')) return 'High';
+  if (lowerText.includes('medium')) return 'Medium';
+  if (lowerText.includes('low')) return 'Low';
+  return 'Medium'; // Default
+}
+
+function cleanIssueText(text) {
+  return text
+    .replace(/^[-•*]\s*/, '') // Remove bullet points
+    .replace(/^\d+\.\s*/, '') // Remove numbering
+    .replace(/^[*#]+\s*/, '') // Remove markdown headers
+    .trim();
+}
+
+function isValidIssue(text) {
+  // Filter out navigation text, headers, and other noise
+  const invalidPatterns = [
+    /^(fix|severity|recommended|additional)/i,
+    /^(the |this |based on)/i,
+    /^\w+:$/,
+    /^```/
+  ];
+  
+  return !invalidPatterns.some(pattern => pattern.test(text)) && text.length > 10;
+}
+
 /**
- * Helper function to extract key findings from AI response
+ * Enhanced helper function to extract key findings from AI response with comprehensive pattern matching
  */
 function extractKeyFindings(analysis) {
   const findings = {
@@ -145,34 +208,150 @@ function extractKeyFindings(analysis) {
     codeQuality: [],
     logicIssues: [],
     performance: [],
-    suggestions: []
+    suggestions: [],
+    lineSpecificIssues: [],
+    businessLogicIssues: [],
+    integrationIssues: [],
+    languageSpecificIssues: []
   };
   
   try {
     const lines = analysis.split('\n');
     let currentSection = '';
+    let isInCodeBlock = false;
     
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       const trimmed = line.trim();
       
-      if (trimmed.includes('What Changed') || trimmed.includes('Changed')) {
+      // Skip empty lines and code blocks
+      if (!trimmed || trimmed.startsWith('```')) {
+        if (trimmed.startsWith('```')) {
+          continue;
+        }
+      }
+      
+      if (isInCodeBlock) continue;
+      
+      // **1. SECTION DETECTION** (Enhanced patterns)
+      if (detectSection(trimmed, 'whatChanged', [
+        'what changed', 'changes made', 'modifications', 'differences', 'altered'
+      ])) {
         currentSection = 'whatChanged';
-      } else if (trimmed.includes('Security') || trimmed.includes('SECURITY')) {
+        continue;
+      }
+      
+      if (detectSection(trimmed, 'securityIssues', [
+        'security', 'vulnerability', 'injection', 'xss', 'csrf', 'authentication', 'authorization'
+      ])) {
         currentSection = 'securityIssues';
-      } else if (trimmed.includes('Quality') || trimmed.includes('QUALITY')) {
+        continue;
+      }
+      
+      if (detectSection(trimmed, 'codeQuality', [
+        'code quality', 'quality', 'maintainability', 'readability', 'clean code', 'best practices'
+      ])) {
         currentSection = 'codeQuality';
-      } else if (trimmed.includes('Logic') || trimmed.includes('LOGIC')) {
+        continue;
+      }
+      
+      if (detectSection(trimmed, 'logicIssues', [
+        'logic', 'bug', 'error', 'issue', 'problem', 'null pointer', 'exception'
+      ])) {
         currentSection = 'logicIssues';
-      } else if (trimmed.includes('Performance') || trimmed.includes('PERFORMANCE')) {
+        continue;
+      }
+      
+      if (detectSection(trimmed, 'performance', [
+        'performance', 'optimization', 'efficiency', 'memory', 'cpu', 'slow'
+      ])) {
         currentSection = 'performance';
-      } else if (trimmed.includes('Suggestion') || trimmed.includes('SUGGESTION')) {
+        continue;
+      }
+      
+      if (detectSection(trimmed, 'suggestions', [
+        'suggestion', 'recommend', 'consider', 'improvement', 'enhancement'
+      ])) {
         currentSection = 'suggestions';
-      } else if (trimmed.length > 10 && currentSection && !trimmed.startsWith('**')) {
-        findings[currentSection].push(trimmed);
+        continue;
+      }
+      
+      if (detectSection(trimmed, 'businessLogicIssues', [
+        'business logic', 'functional', 'requirement', 'behavior'
+      ])) {
+        currentSection = 'businessLogicIssues';
+        continue;
+      }
+      
+      if (detectSection(trimmed, 'integrationIssues', [
+        'integration', 'dependency', 'api', 'interface', 'breaking change'
+      ])) {
+        currentSection = 'integrationIssues';
+        continue;
+      }
+      
+      if (detectSection(trimmed, 'languageSpecificIssues', [
+        'language-specific', 'java-specific', 'javascript-specific', 'python-specific'
+      ])) {
+        currentSection = 'languageSpecificIssues';
+        continue;
+      }
+      
+      // **2. LINE-SPECIFIC ISSUE DETECTION** (Most important!)
+      const lineIssue = extractLineSpecificIssue(trimmed);
+      if (lineIssue) {
+        findings.lineSpecificIssues.push(lineIssue);
+        
+        // Also categorize by type
+        const category = categorizeIssueType(lineIssue.type);
+        if (findings[category]) {
+          findings[category].push(`Line ${lineIssue.line}: ${lineIssue.description}`);
+        }
+        continue;
+      }
+      
+      // **3. NUMBERED LIST DETECTION**
+      const numberedItem = extractNumberedItem(trimmed);
+      if (numberedItem && currentSection) {
+        findings[currentSection].push(numberedItem);
+        continue;
+      }
+      
+      // **4. BULLET POINT DETECTION**
+      const bulletItem = extractBulletPoint(trimmed);
+      if (bulletItem && currentSection) {
+        findings[currentSection].push(bulletItem);
+        continue;
+      }
+      
+      // **5. GENERAL ISSUE PATTERNS** (Fallback)
+      const generalIssue = extractGeneralIssue(trimmed);
+      if (generalIssue) {
+        const category = categorizeIssueType(generalIssue.type);
+        if (findings[category]) {
+          findings[category].push(generalIssue.description);
+        }
+        continue;
+      }
+      
+      // **6. CONTEXT-BASED CLASSIFICATION**
+      if (currentSection && trimmed.length > 15 && !trimmed.startsWith('**') && !trimmed.startsWith('#')) {
+        // Clean up the line and add to current section
+        const cleanedLine = cleanIssueText(trimmed);
+        if (cleanedLine && isValidIssue(cleanedLine)) {
+          findings[currentSection].push(cleanedLine);
+        }
       }
     }
+    
+    // **7. POST-PROCESSING** - Remove duplicates and sort by importance
+    Object.keys(findings).forEach(key => {
+      findings[key] = [...new Set(findings[key])]; // Remove duplicates
+      findings[key] = findings[key].filter(item => item && item.length > 10); // Filter out too short items
+    });
+    
   } catch (error) {
-    console.warn(`⚠️ Failed to extract findings: ${error.message}`);
+    console.warn(`⚠️ Enhanced extraction failed: ${error.message}`);
   }
   
   return findings;
@@ -202,7 +381,6 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
     
     const shouldSkip = skipPatterns.some(pattern => pattern.test(fileData.filename));
     if (shouldSkip) {
-      console.log(`   ⏭️ ${fileData.filename}: Skipped (non-code file)`);
       return {
         filename: fileData.filename,
         changeType: fileData.changeType,
@@ -220,7 +398,6 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
 
     // Detect language
     const language = detectLanguage(fileData.filename);
-    console.log(`   🔍 Starting ${language} analysis for ${fileData.filename} (${fileData.changeType})...`);
 
     let prompt;
     let fileContent;
@@ -235,18 +412,12 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
         throw new Error('Missing blobId for new file');
       }
       
-      console.log(`      📖 Reading new file content...`);
       fileContent = await getBlobContent(repositoryName, fileData.blobId);
       afterContent = fileContent; // Store for commenting
       
-      console.log(`      🧠 Fetching context for new file...`);
       context = await getRelevantContext(repositoryName, branchName, fileData.filename, fileContent, 5);
       
-      console.log(`      📋 Fetching relevant guidelines for ${language}...`);
       guidelines = await getDocumentGuidelines(language, fileContent, 5);
-      if (guidelines.hasGuidelines) {
-        console.log(`      📚 Found ${guidelines.count} relevant guidelines`);
-      }
       
       useContext = true;
       
@@ -266,7 +437,6 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
         throw new Error('Missing blob IDs for modified file');
       }
       
-      console.log(`      📖 Reading before/after content...`);
       [beforeContent, afterContent] = await Promise.all([
         getBlobContent(repositoryName, fileData.beforeBlobId),
         getBlobContent(repositoryName, fileData.afterBlobId)
@@ -279,26 +449,13 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
       // Intelligent context decision
       useContext = shouldUseContext(specificChanges, fileData.filename);
       
-      console.log(`      🔍 Detected ${language} changes: ${diffSummary}`);
-      console.log(`      🧠 Context needed: ${useContext ? 'YES' : 'NO'}`);
-      
       if (useContext) {
-        console.log(`      🔗 Fetching relevant context for integration analysis...`);
         context = await getRelevantContext(repositoryName, branchName, fileData.filename, afterContent, 5);
-        
-        if (context.hasContext) {
-          console.log(`      📚 Found context: ${context.contextChunks.length} chunks from ${context.relatedFiles.length} files`);
-        }
       } else {
-        console.log(`      🚫 Skipping context - changes don't require integration analysis`);
         context = { hasContext: false, contextChunks: [], relatedFiles: [], summary: "Context skipped - diff-focused analysis." };
       }
       
-      console.log(`      📋 Fetching relevant guidelines for ${language} changes...`);
       guidelines = await getDocumentGuidelines(language, afterContent, 5);
-      if (guidelines.hasGuidelines) {
-        console.log(`      📚 Found ${guidelines.count} relevant guidelines for this change`);
-      }
       
       fileContent = afterContent;
       
@@ -332,9 +489,6 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
       throw new Error(`Unsupported change type: ${fileData.changeType}`);
     }
 
-    console.log(`      🤖 Sending to AI (hybrid: Gemini → Ollama)...`);
-    
-    // Use hybrid AI client
     const response = await aiClient.invoke(prompt, {
       temperature: 0.1,
       top_p: 0.8,
@@ -346,43 +500,11 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
     
     const analysisTime = Date.now() - startTime;
     
-    // Log the complete AI response (untruncated)
-    logCompleteAIResponse(response, fileData.filename);
-    
     // Save complete AI response to file if enabled
     await saveCompleteAIResponse(response, fileData.filename, pullRequestInfo?.pullRequestId);
     
-    // Extract key findings
+    // Extract key findings with enhanced method
     const findings = extractKeyFindings(response.content);
-    
-    // Log the truncated summary for readability
-    console.log(formatAIResponseForLog(response.content, fileData.filename));
-    
-    // Enhanced logging with guidelines info
-    console.log(`\n📊 KEY FINDINGS SUMMARY for ${fileData.filename}:`);
-    if (diffSummary) {
-      console.log(`   🔄 Changes: ${diffSummary}`);
-    }
-    if (useContext && context.hasContext) {
-      console.log(`   🔗 Integration Context: ${context.contextChunks.length} chunks analyzed`);
-    }
-    if (guidelines.hasGuidelines) {
-      console.log(`   📋 Guidelines Applied: ${guidelines.count} relevant guidelines used`);
-    }
-    if (findings.whatChanged.length > 0) {
-      console.log(`   📋 What Changed: ${findings.whatChanged.length} items identified`);
-      findings.whatChanged.slice(0, 2).forEach(change => console.log(`      - ${change}`));
-    }
-    if (findings.securityIssues.length > 0) {
-      console.log(`   🔒 Security Issues: ${findings.securityIssues.length} found`);
-      findings.securityIssues.slice(0, 2).forEach(issue => console.log(`      - ${issue}`));
-    }
-    if (findings.suggestions.length > 0) {
-      console.log(`   💡 Suggestions: ${findings.suggestions.length} provided`);
-      findings.suggestions.slice(0, 2).forEach(suggestion => console.log(`      - ${suggestion}`));
-    }
-    
-    console.log(`   ✅ ${fileData.filename} completed (${analysisTime}ms, ${response.provider}${context.contextChunks.length ? `, ${context.contextChunks.length} context chunks` : ''}${guidelines.hasGuidelines ? `, ${guidelines.count} guidelines` : ''})\n`);
     
     const result = {
       filename: fileData.filename,
@@ -413,8 +535,6 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
     // Post line-specific AI issues if PR info is provided
     if (pullRequestInfo && isCommentingEnabled() && result.success) {
       try {
-        console.log(`      💬 Posting line-specific AI issue comments...`);
-        
         const commentResults = await postLineSpecificIssues({
           repositoryName,
           pullRequestId: pullRequestInfo.pullRequestId,
@@ -423,11 +543,11 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
           filePath: fileData.filename,
           aiAnalysis: response.content,
           beforeContent: beforeContent,
-          afterContent: afterContent
+          afterContent: afterContent,
+          keyFindings: findings
         });
         
         const successfulComments = commentResults.filter(r => r.success).length;
-        console.log(`      ✅ Posted ${successfulComments} line-specific issue comments`);
         
         result.reviewComment = {
           success: successfulComments > 0,
@@ -438,7 +558,6 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
         };
         
       } catch (commentError) {
-        console.error(`      ⚠️ Comment posting failed:`, commentError.message);
         result.reviewComment = {
           success: false,
           error: commentError.message
@@ -461,7 +580,7 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
       filename: fileData.filename,
       changeType: fileData.changeType,
       analysis: `Analysis failed: ${error.message}`,
-      keyFindings: { whatChanged: [], securityIssues: [], codeQuality: [], logicIssues: [], performance: [], suggestions: [] },
+      keyFindings: { whatChanged: [], securityIssues: [], codeQuality: [], logicIssues: [], performance: [], suggestions: [], lineSpecificIssues: [], businessLogicIssues: [], integrationIssues: [], languageSpecificIssues: [] },
       context: { hasContext: false, relatedFiles: [], contextChunksCount: 0, summary: "Context unavailable due to error." },
       guidelines: { hasGuidelines: false, count: 0, summary: "Guidelines unavailable due to error." },
       reviewComment: { success: false, error: 'Analysis failed' },
@@ -486,21 +605,11 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
   const results = [];
   const totalBatches = Math.ceil(files.length / batchSize);
   
-  console.log(`🤖 Starting multi-language analysis of ${files.length} files`);
-  console.log(`📋 Files to analyze: ${files.map(f => `${f.filename} (${f.changeType})`).join(', ')}\n`);
-  
-  if (pullRequestInfo && isCommentingEnabled()) {
-    console.log(`💬 Line-specific AI issue comments will be posted to Changes tab for PR #${pullRequestInfo.pullRequestId}`);
-  } else {
-    console.log(`⚠️ Comment posting disabled`);
-  }
+  console.log(`🤖 Starting analysis of ${files.length} files`);
   
   for (let i = 0; i < files.length; i += batchSize) {
     const batch = files.slice(i, i + batchSize);
     const batchNumber = Math.floor(i / batchSize) + 1;
-    
-    console.log(`📦 Batch ${batchNumber}/${totalBatches} - Processing ${batch.length} files:`);
-    batch.forEach(file => console.log(`   📄 ${file.filename} (${file.changeType})`));
     
     const batchPromises = batch.map(file => 
       analyzeFileWithAI(file, repositoryName, branchName, pullRequestInfo)
@@ -514,12 +623,11 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
         if (analysisResult && typeof analysisResult === 'object') {
           results.push(analysisResult);
         } else {
-          console.error(`   ❌ ${batch[index].filename}: Invalid analysis result structure`);
           results.push({
             filename: batch[index].filename,
             changeType: batch[index].changeType,
             analysis: `Analysis returned invalid result structure`,
-            keyFindings: { whatChanged: [], securityIssues: [], codeQuality: [], logicIssues: [], performance: [], suggestions: [] },
+            keyFindings: { whatChanged: [], securityIssues: [], codeQuality: [], logicIssues: [], performance: [], suggestions: [], lineSpecificIssues: [], businessLogicIssues: [], integrationIssues: [], languageSpecificIssues: [] },
             context: { hasContext: false, relatedFiles: [], contextChunksCount: 0 },
             guidelines: { hasGuidelines: false, count: 0, summary: "Invalid result structure." },
             reviewComment: { success: false, error: 'Invalid result structure' },
@@ -530,12 +638,11 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
           });
         }
       } else {
-        console.error(`   ❌ ${batch[index].filename}: Batch processing failed - ${result.reason}`);
         results.push({
           filename: batch[index].filename,
           changeType: batch[index].changeType,
           analysis: `Batch processing failed: ${result.reason}`,
-          keyFindings: { whatChanged: [], securityIssues: [], codeQuality: [], logicIssues: [], performance: [], suggestions: [] },
+          keyFindings: { whatChanged: [], securityIssues: [], codeQuality: [], logicIssues: [], performance: [], suggestions: [], lineSpecificIssues: [], businessLogicIssues: [], integrationIssues: [], languageSpecificIssues: [] },
           context: { hasContext: false, relatedFiles: [], contextChunksCount: 0 },
           guidelines: { hasGuidelines: false, count: 0, summary: "Batch processing failed." },
           reviewComment: { success: false, error: 'Batch processing failed' },
@@ -546,16 +653,13 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
         });
       }
     });
-    
-    const batchSuccessful = batchResults.filter(r => r.status === 'fulfilled').length;
-    console.log(`📦 Batch ${batchNumber} complete: ${batchSuccessful}/${batch.length} successful\n`);
   }
   
   const successfulAnalyses = results.filter(r => r.success && !r.skipped);
   const skippedAnalyses = results.filter(r => r.skipped);
   const failedAnalyses = results.filter(r => r.error);
   
-  // Calculate comment statistics
+  // Calculate statistics
   const commentStats = results.reduce((stats, result) => {
     if (result.reviewComment && result.reviewComment.success) {
       stats.successful += result.reviewComment.totalComments || 1;
@@ -568,7 +672,6 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
     return stats;
   }, { successful: 0, failed: 0 });
   
-  // Calculate guidelines statistics
   const guidelinesStats = results.reduce((stats, result) => {
     if (result.guidelines && result.guidelines.hasGuidelines) {
       stats.applied += result.guidelines.count;
@@ -577,65 +680,13 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
     return stats;
   }, { applied: 0, filesWithGuidelines: 0 });
   
-  // Enhanced final summary with language breakdown and AI provider stats
-  console.log(`\n${'='.repeat(80)}`);
-  console.log(`📊 FINAL MULTI-LANGUAGE ANALYSIS SUMMARY`);
-  console.log(`${'='.repeat(80)}`);
-  console.log(`Total Files: ${results.length}`);
+  // Final summary
+  console.log(`\n📊 Analysis Complete:`);
   console.log(`✅ Successful: ${successfulAnalyses.length}`);
   console.log(`⏭️ Skipped: ${skippedAnalyses.length}`);
   console.log(`❌ Failed: ${failedAnalyses.length}`);
-  console.log(`💬 Total Line-Specific Issue Comments Posted: ${commentStats.successful}`);
-  console.log(`📋 Total Guidelines Applied: ${guidelinesStats.applied} across ${guidelinesStats.filesWithGuidelines} files`);
-  if (commentStats.failed > 0) {
-    console.log(`⚠️ Comments Failed: ${commentStats.failed}`);
-  }
-  
-  // Language breakdown
-  const languageStats = successfulAnalyses.reduce((stats, result) => {
-    const lang = result.language || 'Unknown';
-    stats[lang] = (stats[lang] || 0) + 1;
-    return stats;
-  }, {});
-  
-  // AI Provider breakdown
-  const aiProviderStats = successfulAnalyses.reduce((stats, result) => {
-    const provider = result.aiProvider || 'Unknown';
-    stats[provider] = (stats[provider] || 0) + 1;
-    return stats;
-  }, {});
-  
-  if (Object.keys(languageStats).length > 0) {
-    console.log(`\n🌐 Languages analyzed: ${Object.entries(languageStats).map(([lang, count]) => `${lang} (${count})`).join(', ')}`);
-  }
-  
-  if (Object.keys(aiProviderStats).length > 0) {
-    console.log(`\n🤖 AI Providers used: ${Object.entries(aiProviderStats).map(([provider, count]) => `${provider} (${count})`).join(', ')}`);
-  }
-  
-  if (successfulAnalyses.length > 0) {
-    console.log(`\n📋 SUCCESSFUL ANALYSES:`);
-    successfulAnalyses.forEach((result, index) => {
-      console.log(`\n${index + 1}. ${result.filename} (${result.changeType}) - ${result.language} [${result.aiProvider}]`);
-      if (result.diffSummary) {
-        console.log(`   🔄 Changes: ${result.diffSummary}`);
-      }
-      console.log(`   📝 Analysis length: ${result.analysis.length} characters`);
-      console.log(`   ⏱️ Analysis time: ${result.analysisTime}ms`);
-      console.log(`   🧠 Context used: ${result.contextUsed ? 'YES' : 'NO'}`);
-      console.log(`   📋 Guidelines applied: ${result.guidelines.hasGuidelines ? result.guidelines.count : 0}`);
-      
-      const totalComments = result.reviewComment?.totalComments || (result.reviewComment?.success ? 1 : 0);
-      console.log(`   💬 Line-specific issue comments posted: ${totalComments}`);
-      
-      if (result.keyFindings) {
-        const totalFindings = Object.values(result.keyFindings).reduce((sum, arr) => sum + arr.length, 0);
-        console.log(`   🔍 Key findings: ${totalFindings} items`);
-      }
-    });
-  }
-  
-  console.log(`${'='.repeat(80)}\n`);
+  console.log(`💬 Comments Posted: ${commentStats.successful}`);
+  console.log(`📋 Guidelines Applied: ${guidelinesStats.applied}`);
   
   return results;
 }
