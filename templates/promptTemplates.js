@@ -43,7 +43,7 @@ package com.example;           // <- This is Line 1
 import java.util.List;        // <- This is Line 3
                               // <- This is Line 4 (empty line)
 @Service                      // <- This is Line 5
-public class MyService {      // <- This is Line 6
+public class MyService {{      // <- This is Line 6
     private String field;     // <- This is Line 7
 \`\`\`
 
@@ -135,7 +135,7 @@ package com.example;           // <- This is Line 1
 import java.util.List;        // <- This is Line 3
                               // <- This is Line 4 (empty line)
 @Service                      // <- This is Line 5
-public class MyService {      // <- This is Line 6
+public class MyService {{      // <- This is Line 6
     private String field;     // <- This is Line 7
 \`\`\`
 

@@ -11,9 +11,57 @@ export async function postInlineFileComment({
   afterCommitId,
   filePath,
   line,
-  content
+  content,
+  afterContent = null  // ✅ ADD THIS PARAMETER
 }) {
   try {
+    console.log(`\n🔍 === COMMENT POSTING DEBUG for ${filePath} ===`);
+    console.log(`🎯 Attempting to post comment on line: ${line}`);
+    console.log(`📝 Comment content preview: "${content.substring(0, 100)}..."`);
+    
+    // Enhanced validation and debugging
+    if (afterContent) {
+      const afterLines = afterContent.split('\n');
+      console.log(`📊 File Analysis:`);
+      console.log(`   - Total lines in file: ${afterLines.length}`);
+      console.log(`   - Requested line number: ${line}`);
+      console.log(`   - Line exists: ${line >= 1 && line <= afterLines.length ? '✅ YES' : '❌ NO'}`);
+      
+      if (line >= 1 && line <= afterLines.length) {
+        const lineContent = afterLines[line - 1];
+        console.log(`   - Line ${line} content: "${lineContent.trim()}"`);
+        console.log(`   - Line ${line} length: ${lineContent.length} chars`);
+        console.log(`   - Line ${line} is empty: ${lineContent.trim().length === 0 ? 'YES' : 'NO'}`);
+      } else {
+        console.log(`❌ ERROR: Line ${line} is out of range!`);
+        return {
+          success: false,
+          error: `Line ${line} out of range (1-${afterLines.length})`,
+          filePath,
+          line
+        };
+      }
+      
+      // Show context around the target line
+      console.log(`📄 Context around line ${line}:`);
+      const startLine = Math.max(1, line - 3);
+      const endLine = Math.min(afterLines.length, line + 3);
+      for (let i = startLine; i <= endLine; i++) {
+        const marker = i === line ? '>>> TARGET >>>' : '            ';
+        const lineContent = afterLines[i - 1] || 'EMPTY';
+        console.log(`   ${marker} Line ${i}: "${lineContent.trim()}"`);
+      }
+    } else {
+      console.warn(`⚠️ No afterContent provided for validation`);
+    }
+
+    console.log(`🚀 Sending to AWS CodeCommit API...`);
+    console.log(`   - Repository: ${repositoryName}`);
+    console.log(`   - PR ID: ${pullRequestId}`);
+    console.log(`   - File Path: ${filePath}`);
+    console.log(`   - File Position: ${line}`);
+    console.log(`   - Relative File Version: AFTER`);
+
     const command = new PostCommentForPullRequestCommand({
       pullRequestId,
       repositoryName,
@@ -28,19 +76,34 @@ export async function postInlineFileComment({
     });
 
     const response = await client.send(command);
+    console.log(`✅ SUCCESS: Comment posted successfully`);
+    console.log(`   - Comment ID: ${response.comment?.commentId}`);
+    console.log(`   - Response: ${JSON.stringify(response.comment, null, 2)}`);
+    
     return {
       success: true,
       commentId: response.comment?.commentId,
       filePath,
-      line
+      line,
+      awsResponse: response.comment
     };
   } catch (err) {
-    console.error(`❌ Failed to post inline comment to ${filePath} line ${line}:`, err.message);
+    console.error(`❌ AWS CodeCommit API ERROR for ${filePath} line ${line}:`);
+    console.error(`   - Error Name: ${err.name}`);
+    console.error(`   - Error Message: ${err.message}`);
+    console.error(`   - Error Code: ${err.$metadata?.httpStatusCode || 'unknown'}`);
+    console.error(`   - Full Error: ${JSON.stringify(err, null, 2)}`);
+    
     return {
       success: false,
       error: err.message,
       filePath,
-      line
+      line,
+      errorDetails: {
+        name: err.name,
+        code: err.$metadata?.httpStatusCode,
+        message: err.message
+      }
     };
   }
 }
@@ -388,11 +451,16 @@ export async function postLineSpecificIssues({
   aiAnalysis,
   beforeContent,
   afterContent,
-  keyFindings = null  // Accept pre-processed keyFindings
+  keyFindings = null
 }) {
   const results = [];
   
   try {
+    // ✅ ADD: Debug AI analysis
+    if (aiAnalysis && afterContent) {
+      debugAIAnalysis(aiAnalysis, afterContent, filePath);
+    }
+    
     // Validate inputs
     if (!repositoryName || !pullRequestId || !filePath) {
       throw new Error('Missing required parameters for posting comments');
@@ -402,17 +470,21 @@ export async function postLineSpecificIssues({
     let changedLines = [];
     if (beforeContent && afterContent) {
       changedLines = getChangedLines(beforeContent, afterContent);
+      console.log(`📊 Detected ${changedLines.length} changed lines in ${filePath}`);
     }
     
     // Use enhanced keyFindings if available, otherwise fall back to text parsing
     let lineIssues = [];
     if (keyFindings) {
       lineIssues = extractLineSpecificIssuesFromKeyFindings(keyFindings, aiAnalysis);
+      console.log(`🎯 Using enhanced extraction: ${lineIssues.length} line-specific issues`);
     } else {
       lineIssues = extractLineSpecificIssuesLegacy(aiAnalysis);
+      console.log(`🔄 Using legacy extraction: ${lineIssues.length} line-specific issues`);
     }
     
     if (lineIssues.length === 0) {
+      console.log(`✅ No line-specific issues identified by AI for ${filePath}`);
       return [{
         success: true,
         message: 'No line-specific issues identified',
@@ -420,10 +492,17 @@ export async function postLineSpecificIssues({
       }];
     }
     
+    // ✅ ADD: Debug extracted issues
+    console.log(`\n📋 EXTRACTED ISSUES DEBUG for ${filePath}:`);
+    lineIssues.forEach((issue, index) => {
+      console.log(`   ${index + 1}. Line ${issue.line}: ${issue.type} - ${issue.problem.substring(0, 50)}...`);
+    });
+    
     // Limit to prevent spam
     const maxComments = 10;
     let issuesToPost = lineIssues;
     if (issuesToPost.length > maxComments) {
+      console.log(`⚠️ Limiting to ${maxComments} most critical issues (${issuesToPost.length} total found)`);
       issuesToPost = issuesToPost
         .sort((a, b) => {
           const severityOrder = { 'critical': 4, 'high': 3, 'medium': 2, 'low': 1 };
@@ -437,6 +516,7 @@ export async function postLineSpecificIssues({
       try {
         const commentContent = formatProfessionalComment(issue);
         
+        // ✅ UPDATED: Pass afterContent for validation
         const issueComment = await postInlineFileComment({
           repositoryName,
           pullRequestId,
@@ -444,7 +524,8 @@ export async function postLineSpecificIssues({
           afterCommitId,
           filePath,
           line: issue.line,
-          content: commentContent
+          content: commentContent,
+          afterContent: afterContent  // ✅ PASS FULL CONTENT
         });
         
         results.push(issueComment);
@@ -462,6 +543,9 @@ export async function postLineSpecificIssues({
         });
       }
     }
+    
+    const successfulComments = results.filter(r => r.success).length;
+    console.log(`✅ Posted ${successfulComments}/${issuesToPost.length} line-specific issue comments for ${filePath}`);
     
   } catch (error) {
     console.error(`❌ Failed to post line-specific issue comments for ${filePath}:`, error.message);
@@ -517,4 +601,43 @@ export async function postAIAnalysisComment({
  */
 export function isCommentingEnabled() {
   return process.env.CODECOMMIT_COMMENTS_ENABLED !== 'false';
+}
+
+/**
+ * Debug function to validate AI analysis against actual file content
+ */
+function debugAIAnalysis(aiAnalysis, afterContent, filename) {
+  console.log(`\n🤖 === AI ANALYSIS DEBUG for ${filename} ===`);
+  
+  if (!afterContent) {
+    console.warn(`⚠️ No afterContent to validate against`);
+    return;
+  }
+  
+  const afterLines = afterContent.split('\n');
+  console.log(`📊 File has ${afterLines.length} total lines`);
+  
+  // Extract all line mentions from AI analysis
+  const lineMatches = aiAnalysis.match(/Line\s+(\d+):/gi) || [];
+  console.log(`🔍 AI mentioned ${lineMatches.length} line-specific issues:`);
+  
+  lineMatches.forEach((match, index) => {
+    const lineNumber = parseInt(match.match(/(\d+)/)[1]);
+    console.log(`\n   ${index + 1}. ${match}`);
+    console.log(`      - Line number: ${lineNumber}`);
+    console.log(`      - Valid range: ${lineNumber >= 1 && lineNumber <= afterLines.length ? '✅' : '❌'}`);
+    
+    if (lineNumber >= 1 && lineNumber <= afterLines.length) {
+      const lineContent = afterLines[lineNumber - 1];
+      console.log(`      - Content: "${lineContent.trim()}"`);
+    } else {
+      console.log(`      - ERROR: Out of range! (File only has ${afterLines.length} lines)`);
+    }
+  });
+  
+  // Show the first 10 lines of the file for reference
+  console.log(`\n📄 File preview (first 10 lines):`);
+  for (let i = 0; i < Math.min(10, afterLines.length); i++) {
+    console.log(`   Line ${i + 1}: "${afterLines[i].trim()}"`);
+  }
 }
