@@ -4,12 +4,6 @@ import { getRelevantContext, formatContextForPrompt, getDocumentGuidelines } fro
 import { GeminiAIClient } from "./utils/geminiClient.js";
 import { AnthropicAIClient } from "./utils/anthropicClient.js";
 import { detectLanguage } from "./utils/languageDetector.js";
-import { 
-  analyzeSpecificChanges, 
-  generateDiffSummary, 
-  shouldUseContext, 
-  generateContextAwarePromptAddition 
-} from "./utils/changeAnalyzer.js";
 import { modifiedFileTemplate, newFileTemplate } from "./templates/promptTemplates.js";
 import { postLineSpecificIssues, isCommentingEnabled } from "./utils/codecommitComments.js";
 
@@ -149,6 +143,7 @@ function categorizeIssueType(type) {
   return 'suggestions';
 }
 
+// **LINE NUMBERING FUNCTIONS**
 function addLineNumbers(content, prefix = '') {
   if (!content) return '';
   
@@ -352,14 +347,12 @@ function extractKeyFindings(analysis) {
   return findings;
 }
 
-// **CONTEXT AND CONTENT PROCESSING**
+// **SIMPLIFIED CONTENT PROCESSING**
 async function processFileContent(fileData, repositoryName, branchName) {
   let beforeContent = null;
   let afterContent = null;
   let context = { hasContext: false, contextChunks: [], relatedFiles: [], summary: "No context available." };
   let guidelines = { hasGuidelines: false, guidelines: [], count: 0, formatted: "Apply standard coding best practices." };
-  let diffSummary = '';
-  let useContext = false;
 
   const language = detectLanguage(fileData.filename);
 
@@ -372,7 +365,6 @@ async function processFileContent(fileData, repositoryName, branchName) {
     afterContent = await getBlobContent(repositoryName, fileData.blobId);
     context = await getRelevantContext(repositoryName, branchName, fileData.filename, afterContent, 5);
     guidelines = await getDocumentGuidelines(language, afterContent, 5);
-    useContext = true;
     
   } else if (fileData.changeType === 'M') {
     // Modified file
@@ -385,16 +377,8 @@ async function processFileContent(fileData, repositoryName, branchName) {
       getBlobContent(repositoryName, fileData.afterBlobId)
     ]);
     
-    const specificChanges = analyzeSpecificChanges(beforeContent, afterContent, fileData.filename);
-    diffSummary = generateDiffSummary(specificChanges);
-    useContext = shouldUseContext(specificChanges, fileData.filename);
-    
-    if (useContext) {
-      context = await getRelevantContext(repositoryName, branchName, fileData.filename, afterContent, 5);
-    } else {
-      context = { hasContext: false, contextChunks: [], relatedFiles: [], summary: "Context skipped - diff-focused analysis." };
-    }
-    
+    // Always get context - much simpler!
+    context = await getRelevantContext(repositoryName, branchName, fileData.filename, afterContent, 5);
     guidelines = await getDocumentGuidelines(language, afterContent, 5);
   } else {
     throw new Error(`Unsupported change type: ${fileData.changeType}`);
@@ -405,14 +389,12 @@ async function processFileContent(fileData, repositoryName, branchName) {
     afterContent,
     context,
     guidelines,
-    diffSummary,
-    useContext,
     language
   };
 }
 
 async function generatePrompt(fileData, contentData) {
-  const { beforeContent, afterContent, context, guidelines, useContext, language } = contentData;
+  const { beforeContent, afterContent, context, guidelines, language } = contentData;
   const contextSection = formatContextForPrompt(context);
 
   if (fileData.changeType === 'A') {
@@ -421,7 +403,7 @@ async function generatePrompt(fileData, contentData) {
     
     return await newFileTemplate.format({
       filename: fileData.filename,
-      content: numberedContent,  // ← Changed this line
+      content: numberedContent,
       contextSection: contextSection,
       guidelinesSection: guidelines.formatted,
       language: language
@@ -431,20 +413,16 @@ async function generatePrompt(fileData, contentData) {
     const numberedBeforeContent = addLineNumbersWithLabel(beforeContent, 'BEFORE');
     const numberedAfterContent = addLineNumbersWithLabel(afterContent, 'AFTER');
     
-    const contextPromptAddition = generateContextAwarePromptAddition(
-      analyzeSpecificChanges(beforeContent, afterContent, fileData.filename)
-    );
-    const contextAnalysisInstructions = useContext ? 
-      "Use the provided context to identify potential integration issues and cross-file dependencies." :
-      "Focus purely on the changes in this file as no integration context is needed.";
+    // Simple context analysis instruction
+    const contextAnalysisInstructions = "Use the provided context to identify potential integration issues and cross-file dependencies.";
 
     return await modifiedFileTemplate.format({
       filename: fileData.filename,
-      beforeContent: numberedBeforeContent,  // ← Changed this line
-      afterContent: numberedAfterContent,    // ← Changed this line
+      beforeContent: numberedBeforeContent,
+      afterContent: numberedAfterContent,
       contextSection: contextSection,
       guidelinesSection: guidelines.formatted,
-      contextPromptAddition: contextPromptAddition,
+      contextPromptAddition: "", // Simplified - no complex prompt addition
       contextAnalysisInstructions: contextAnalysisInstructions,
       language: language
     });
@@ -493,8 +471,6 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
       language: contentData.language,
       analysis: response.content,
       keyFindings: findings,
-      diffSummary: contentData.diffSummary,
-      contextUsed: contentData.useContext,
       context: {
         hasContext: contentData.context.hasContext,
         relatedFiles: contentData.context.relatedFiles,
@@ -517,6 +493,8 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
     // Post line-specific comments if enabled
     if (pullRequestInfo && isCommentingEnabled() && result.success) {
       try {
+        console.log(`🔍 Using line-based commenting for ${fileData.filename}`);
+        
         const commentResults = await postLineSpecificIssues({
           repositoryName,
           pullRequestId: pullRequestInfo.pullRequestId,
@@ -639,10 +617,6 @@ export async function analyzeFilesInBatches(files, repositoryName, branchName = 
 // **API FUNCTIONS**
 export async function getAIStats() {
   return aiClient.getStats();
-}
-
-export function forceOllamaMode() {
-  aiClient.forceOllamaMode();
 }
 
 export function forceGeminiMode() {

@@ -76,7 +76,7 @@ Analyze the specific changes and provide:
 5. **Security Impact**: Security implications using both specific guidelines and general security principles
 6. **Code Quality**: Quality issues following both provided guidelines and {language} best practices
 7. **Logic Issues**: Potential bugs introduced by these specific changes
-8. **Integration Impact**: How these changes affect related code {contextPromptAddition}
+8. **Integration Impact**: How these changes affect related code
 9. **Language-Specific Issues**: {language}-specific concerns (performance, memory, etc.)
 
 {contextAnalysisInstructions}
@@ -90,7 +90,7 @@ Analyze the specific changes and provide:
 - Always use the exact format **Line X: [Issue Type]** with bracketed issue types
 - Verify your line numbers correspond to the AFTER version`,
   
-  inputVariables: ["filename", "beforeContent", "afterContent", "contextSection", "guidelinesSection", "contextPromptAddition", "contextAnalysisInstructions", "language"],
+  inputVariables: ["filename", "beforeContent", "afterContent", "contextSection", "guidelinesSection", "contextAnalysisInstructions", "language"],
 });
 
 // Language-agnostic new file template with line-numbered content
