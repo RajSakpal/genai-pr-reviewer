@@ -465,19 +465,10 @@ export async function analyzeFileWithAI(fileData, repositoryName, branchName = '
         "Use the provided context to identify potential integration issues and cross-file dependencies." :
         "Focus purely on the changes in this file as no integration context is needed.";
       
-      // Limit content for performance
-      const maxContentLength = 3000;
-      const truncatedBefore = beforeContent.length > maxContentLength 
-        ? beforeContent.substring(0, maxContentLength) + "\n... [truncated for performance]"
-        : beforeContent;
-      const truncatedAfter = afterContent.length > maxContentLength 
-        ? afterContent.substring(0, maxContentLength) + "\n... [truncated for performance]"
-        : afterContent;
-      
       prompt = await modifiedFileTemplate.format({
         filename: fileData.filename,
-        beforeContent: truncatedBefore,
-        afterContent: truncatedAfter,
+        beforeContent: beforeContent,
+        afterContent: afterContent,
         contextSection: contextSection,
         guidelinesSection: guidelines.formatted,
         contextPromptAddition: contextPromptAddition,
