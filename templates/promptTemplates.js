@@ -1,9 +1,9 @@
 /**
- * AI prompt templates for different file types and languages
+ * AI prompt templates with line numbering for accurate line references
  */
 import { PromptTemplate } from "@langchain/core/prompts";
 
-// Language-agnostic modified file template with line-specific analysis and guidelines
+// Language-agnostic modified file template with line-numbered content
 export const modifiedFileTemplate = new PromptTemplate({
   template: `You are a senior software engineer reviewing a Pull Request diff for a {language} file.
 
@@ -16,12 +16,12 @@ export const modifiedFileTemplate = new PromptTemplate({
 
 File: {filename}
 
-BEFORE (Original):
+BEFORE (Original) - with line numbers:
 \`\`\`{language}
 {beforeContent}
 \`\`\`
 
-AFTER (Modified):
+AFTER (Modified) - with line numbers:
 \`\`\`{language}
 {afterContent}
 \`\`\`
@@ -29,45 +29,37 @@ AFTER (Modified):
 {contextSection}
 
 **CRITICAL LINE NUMBER INSTRUCTION**: 
-- When identifying issues, count line numbers ONLY from the AFTER version above
-- Line 1 = first line of the AFTER code block
-- Line 2 = second line of the AFTER code block  
-- COMPLETELY IGNORE line numbers from the BEFORE version
-- Count from the very first line of the AFTER code, including imports, package declarations, etc.
+- The code above shows BOTH versions with prefixed line numbers
+- BEFORE version lines are prefixed with "BEFORE-XXX:"
+- AFTER version lines are prefixed with "AFTER-XXX:"
+- When identifying issues, ONLY reference AFTER line numbers
+- Format: **Line X: [Issue Type]** where X is the AFTER line number (without the AFTER- prefix)
 
-**LINE COUNTING EXAMPLE:**
-If the AFTER version shows:
-\`\`\`java
-package com.example;           // <- This is Line 1
-                              // <- This is Line 2 (empty line)
-import java.util.List;        // <- This is Line 3
-                              // <- This is Line 4 (empty line)
-@Service                      // <- This is Line 5
-public class MyService {{      // <- This is Line 6
-    private String field;     // <- This is Line 7
+**EXAMPLES:**
+If you see:
+\`\`\`
+BEFORE-010: public class Service {{
+BEFORE-011:     @Autowired private Repository repo;
+BEFORE-012: }}
 \`\`\`
 
-Then issues should reference:
-- **Line 1: [Code Quality]** - Package naming issue
-- **Line 3: [Code Quality]** - Import organization issue  
-- **Line 7: [Code Quality]** - Field should use constructor injection
+\`\`\`
+AFTER-010: public class Service {{
+AFTER-011:     @Autowired private Repository repo;
+AFTER-012:     private final String newField;
+AFTER-013: }}
+\`\`\`
 
-**CRITICAL INSTRUCTION**: When you identify issues, you MUST specify the exact line number in the AFTER version where the issue exists. Use this EXACT format for any issues found:
-- **Line X: [Issue Type]** - Description of the issue and suggested fix
+Then report issues like:
+- **Line 11: [Code Quality]** - Use constructor injection instead of field injection
+- **Line 12: [Code Quality]** - New field should be initialized in constructor
 
-**REQUIRED FORMAT EXAMPLES:**
-- **Line 7: [Code Quality]** - Use constructor injection instead of field injection
-- **Line 22: [Logic Issue]** - Missing null check may cause NullPointerException  
-- **Line 35: [Security Issue]** - Direct use of .get() without validation
-- **Line 45: [Performance Issue]** - Inefficient loop structure detected
-
-**IMPORTANT**: 
-- ALWAYS use bracketed [Issue Type] format - NOT "Potential Issue" or "Issue"
+**REQUIRED FORMAT:**
+- **Line X: [Issue Type]** - Description and suggested fix
+- Use ONLY the numeric part of AFTER line numbers
 - Valid issue types: [Code Quality], [Logic Issue], [Security Issue], [Performance Issue], [Business Logic], [Code Cleanup], [Documentation]
-- DO NOT use formats like "Potential Issue" or plain "Issue"
-- **VERIFICATION**: Before finalizing your response, double-check that your line numbers correspond to the AFTER version line counts
 
-**ANALYSIS SCOPE**: Focus ONLY on the actual changes between BEFORE and AFTER versions. Apply:
+**ANALYSIS SCOPE**: Focus on the actual changes between BEFORE and AFTER versions. Apply:
 1. The specific guidelines provided above (when applicable)
 2. General {language} best practices and conventions
 3. Universal security, performance, and code quality standards
@@ -94,14 +86,14 @@ Analyze the specific changes and provide:
 - For general standard violations: "Line X: [Issue Type] - Description (violates {language} best practice)"
 
 **FINAL REMINDER**: 
-- Count lines ONLY from the AFTER version
-- Start counting from Line 1 at the very first line of the AFTER code block
-- Verify your line numbers before submitting your analysis
-- Always use the exact format **Line X: [Issue Type]** with bracketed issue types`,
+- Reference ONLY AFTER line numbers (without the AFTER- prefix)
+- Always use the exact format **Line X: [Issue Type]** with bracketed issue types
+- Verify your line numbers correspond to the AFTER version`,
+  
   inputVariables: ["filename", "beforeContent", "afterContent", "contextSection", "guidelinesSection", "contextPromptAddition", "contextAnalysisInstructions", "language"],
 });
 
-// Language-agnostic new file template with line-specific analysis and guidelines
+// Language-agnostic new file template with line-numbered content
 export const newFileTemplate = new PromptTemplate({
   template: `You are a senior software engineer reviewing a new {language} file in a Pull Request.
 
@@ -114,52 +106,36 @@ export const newFileTemplate = new PromptTemplate({
 
 New File: {filename}
 
-Content:
+Content with line numbers:
 \`\`\`{language}
 {content}
 \`\`\`
 
 {contextSection}
 
-**CRITICAL LINE NUMBER INSTRUCTION**: 
-- When identifying issues, count line numbers from the file content above
-- Line 1 = first line of the code block
-- Line 2 = second line of the code block
-- Count from the very first line, including imports, package declarations, etc.
+**LINE NUMBER INSTRUCTION**: 
+- The code above includes line numbers in format "  X: code"
+- When identifying issues, reference the line number X
+- Format: **Line X: [Issue Type]** - Description and suggested fix
 
-**LINE COUNTING EXAMPLE:**
-If the file content shows:
-\`\`\`java
-package com.example;           // <- This is Line 1
-                              // <- This is Line 2 (empty line)
-import java.util.List;        // <- This is Line 3
-                              // <- This is Line 4 (empty line)
-@Service                      // <- This is Line 5
-public class MyService {{      // <- This is Line 6
-    private String field;     // <- This is Line 7
+**EXAMPLE:**
+If you see:
+\`\`\`
+  010: public class Service {{
+  011:     @Autowired private Repository repo;
+  012:     private final String field;
+  013: }}
 \`\`\`
 
-Then issues should reference:
-- **Line 1: [Code Quality]** - Package naming issue
-- **Line 3: [Code Quality]** - Import organization issue  
-- **Line 7: [Code Quality]** - Field should use constructor injection
+Then report issues like:
+- **Line 11: [Code Quality]** - Use constructor injection instead of field injection
+- **Line 12: [Code Quality]** - Field should be initialized in constructor
 
-**CRITICAL INSTRUCTION**: When you identify issues, you MUST specify the exact line number where the issue exists. Use this EXACT format for any issues found:
-- **Line X: [Issue Type]** - Description of the issue and suggested fix
-
-**REQUIRED FORMAT EXAMPLES:**
-- **Line 7: [Code Quality]** - Use constructor injection instead of field injection
-- **Line 22: [Logic Issue]** - Missing null check may cause NullPointerException  
-- **Line 35: [Security Issue]** - Direct use of .get() without validation
-- **Line 45: [Performance Issue]** - Inefficient loop structure detected
-
-**IMPORTANT**: 
-- ALWAYS use bracketed [Issue Type] format - NOT "Potential Issue" or "Issue"
+**REQUIRED FORMAT:**
+- **Line X: [Issue Type]** - Description and suggested fix
 - Valid issue types: [Code Quality], [Logic Issue], [Security Issue], [Performance Issue], [Business Logic], [Code Cleanup], [Documentation]
-- DO NOT use formats like "Potential Issue" or plain "Issue"
-- **VERIFICATION**: Before finalizing your response, double-check that your line numbers correspond to the actual file line counts
 
-**ANALYSIS SCOPE**: Apply comprehensive {language} analysis using:
+**ANALYSIS SCOPE**: Comprehensive {language} analysis using:
 1. The specific guidelines provided above (when applicable)
 2. General {language} best practices and conventions
 3. Universal security, performance, and code quality standards
@@ -184,8 +160,8 @@ Analyze this new {language} file comprehensively:
 - For general standard violations: "Line X: [Issue Type] - Description (violates {language} best practice)"
 
 **FINAL REMINDER**: 
-- Count lines from Line 1 at the very first line of the code block
-- Verify your line numbers before submitting your analysis
+- Reference line numbers as shown in the numbered content
 - Always use the exact format **Line X: [Issue Type]** with bracketed issue types`,
+  
   inputVariables: ["filename", "content", "contextSection", "guidelinesSection", "language"],
 });

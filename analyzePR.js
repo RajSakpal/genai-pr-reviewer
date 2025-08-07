@@ -149,6 +149,26 @@ function categorizeIssueType(type) {
   return 'suggestions';
 }
 
+function addLineNumbers(content, prefix = '') {
+  if (!content) return '';
+  
+  const lines = content.split('\n');
+  return lines.map((line, index) => {
+    const lineNum = (index + 1).toString().padStart(3, ' ');
+    return `${prefix}${lineNum}: ${line}`;
+  }).join('\n');
+}
+
+function addLineNumbersWithLabel(content, label) {
+  if (!content) return '';
+  
+  const lines = content.split('\n');
+  return lines.map((line, index) => {
+    const lineNum = (index + 1).toString().padStart(3, ' ');
+    return `${label}-${lineNum}: ${line}`;
+  }).join('\n');
+}
+
 function detectSection(text, sectionName) {
   const lowerText = text.toLowerCase();
   const keywords = SECTION_KEYWORDS[sectionName] || [];
@@ -396,14 +416,21 @@ async function generatePrompt(fileData, contentData) {
   const contextSection = formatContextForPrompt(context);
 
   if (fileData.changeType === 'A') {
+    // For new files, just add line numbers to the content
+    const numberedContent = addLineNumbers(afterContent);
+    
     return await newFileTemplate.format({
       filename: fileData.filename,
-      content: afterContent,
+      content: numberedContent,  // ← Changed this line
       contextSection: contextSection,
       guidelinesSection: guidelines.formatted,
       language: language
     });
   } else {
+    // For modified files, add prefixed line numbers
+    const numberedBeforeContent = addLineNumbersWithLabel(beforeContent, 'BEFORE');
+    const numberedAfterContent = addLineNumbersWithLabel(afterContent, 'AFTER');
+    
     const contextPromptAddition = generateContextAwarePromptAddition(
       analyzeSpecificChanges(beforeContent, afterContent, fileData.filename)
     );
@@ -413,8 +440,8 @@ async function generatePrompt(fileData, contentData) {
 
     return await modifiedFileTemplate.format({
       filename: fileData.filename,
-      beforeContent: beforeContent,
-      afterContent: afterContent,
+      beforeContent: numberedBeforeContent,  // ← Changed this line
+      afterContent: numberedAfterContent,    // ← Changed this line
       contextSection: contextSection,
       guidelinesSection: guidelines.formatted,
       contextPromptAddition: contextPromptAddition,

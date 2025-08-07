@@ -85,12 +85,29 @@ const ISSUE_TYPE_CONFIG = {
 };
 
 const LINE_EXTRACTION_PATTERNS = [
-  /^\s*-\s*\*\*Line\s+(\d+):\s*\[?([^\]]+?)\]?\*\*\s*-\s*(.+)$/i,
-  /^\s*\*\*Line\s+(\d+):\s*\[?([^\]]+?)\]?\*\*\s*-\s*(.+)$/i,
-  /^\s*\*\s*\*\*Line\s+(\d+):\s*\[?([^\]]+?)\]?\*\*\s*-\s*(.+)$/i,
-  /^\s*[-*]?\s*Line\s+(\d+):\s*\[?([^\]]+?)\]?\s*-\s*(.+)$/i,
-  /^\s*[-*]?\s*Line\s+(\d+):\s*([^*\-\[]+?)\*?\*?\s*-\s*(.+)$/i
+  // Handle the actual AI format: "* **Line X: [Type]** - Description" (anywhere in line)
+  /\*\s*\*\*Line\s+(\d+):\s*\[([^\]]+?)\]\*\*\s*[-–—]\s*(.+?)(?:\s*\*\*Fix:\*\*|\s*$)/i,
+  
+  // Handle dash bullet format: "- **Line X: [Type]** - Description"
+  /-\s*\*\*Line\s+(\d+):\s*\[([^\]]+?)\]\*\*\s*[-–—]\s*(.+?)(?:\s*\*\*Fix:\*\*|\s*$)/i,
+  
+  // Handle standard format without bullets: "**Line X: [Type]** - Description"
+  /\*\*Line\s+(\d+):\s*\[([^\]]+?)\]\*\*\s*[-–—]\s*(.+?)(?:\s*\*\*Fix:\*\*|\s*$)/i,
+  
+  // Handle format without brackets: "* **Line X: Type** - Description"
+  /\*\s*\*\*Line\s+(\d+):\s*([^*]+?)\*\*\s*[-–—]\s*(.+?)(?:\s*\*\*Fix:\*\*|\s*$)/i,
+  
+  // Handle without double asterisks: "* Line X: [Type] - Description"
+  /[-*]\s*Line\s+(\d+):\s*\[([^\]]+?)\]\s*[-–—]\s*(.+?)(?:\s*\*\*Fix:\*\*|\s*$)/i,
+  
+  // Generic fallback patterns (no start-of-line anchor)
+  /Line\s+(\d+):\s*\[([^\]]+?)\]\s*[-–—]\s*(.+?)(?:\s*\*\*Fix:\*\*|\s*$)/i,
+  /Line\s+(\d+):\s*([^-–—\[]+?)[-–—]\s*(.+?)(?:\s*\*\*Fix:\*\*|\s*$)/i,
+  
+  // Last resort fallback
+  /Line\s+(\d+):\s*(.+?)(?:\s*\(([^)]+)\))?(?:\s*\*\*Fix:\*\*|\s*$)/i
 ];
+
 
 
 const MAX_COMMENTS = 10;  
@@ -106,19 +123,68 @@ function createCommentResult(success, data = {}) {
   };
 }
 
-function validateLineInFile(line, afterContent) {
+// **LINE NUMBER MAPPING FOR NUMBERED CONTENT**
+function mapAILineToActualLine(aiLineNumber, afterContent) {
+  const afterLines = afterContent.split('\n');
+  
+  // Check if content has line number prefixes (like "AFTER-010:" or "  010:")
+  const hasAfterPrefix = afterLines.some(line => line.match(/^AFTER-\d+:/));
+  const hasNumberPrefix = afterLines.some(line => line.match(/^\s*\d+:/));
+  
+  if (hasAfterPrefix) {
+    // Content has AFTER-XXX: prefixes, AI should reference the XXX part
+    const actualLine = afterLines.findIndex(line => {
+      const match = line.match(/^AFTER-(\d+):/);
+      return match && parseInt(match[1]) === aiLineNumber;
+    });
+    return actualLine >= 0 ? actualLine + 1 : aiLineNumber; // fallback to original
+  } else if (hasNumberPrefix) {
+    // Content has simple number prefixes like "  010:"
+    const actualLine = afterLines.findIndex(line => {
+      const match = line.match(/^\s*(\d+):/);
+      return match && parseInt(match[1]) === aiLineNumber;
+    });
+    return actualLine >= 0 ? actualLine + 1 : aiLineNumber; // fallback to original
+  }
+  
+  // No prefixes found, use direct mapping
+  return aiLineNumber;
+}
+
+function validateLineInFile(line, afterContent, isNumberedContent = false) {
   if (!afterContent) {
     return { valid: false, error: 'No file content provided for validation' };
   }
 
   const afterLines = afterContent.split('\n');
-  const isValid = line >= 1 && line <= afterLines.length;
+  
+  // If content was numbered (like "  010: code"), we need to count actual lines
+  // If not numbered, use direct line mapping
+  const totalLines = isNumberedContent ? 
+    afterLines.filter(line => /^\s*\d+:\s/.test(line)).length : 
+    afterLines.length;
+  
+  const isValid = line >= 1 && line <= totalLines;
+
+  let lineContent = null;
+  if (isValid) {
+    if (isNumberedContent) {
+      // Find the line with the specific number prefix
+      const numberedLine = afterLines.find(l => {
+        const match = l.match(/^\s*(\d+):\s(.*)$/);
+        return match && parseInt(match[1]) === line;
+      });
+      lineContent = numberedLine ? numberedLine.replace(/^\s*\d+:\s/, '') : null;
+    } else {
+      lineContent = afterLines[line - 1];
+    }
+  }
 
   return {
     valid: isValid,
-    totalLines: afterLines.length,
-    lineContent: isValid ? afterLines[line - 1] : null,
-    error: isValid ? null : `Line ${line} out of range (1-${afterLines.length})`
+    totalLines: totalLines,
+    lineContent: lineContent,
+    error: isValid ? null : `Line ${line} out of range (1-${totalLines})`
   };
 }
 
@@ -135,9 +201,9 @@ function logCommentDebug(filePath, line, content, afterContent) {
     console.log(`   - Line exists: ${validation.valid ? '✅ YES' : '❌ NO'}`);
     
     if (validation.valid) {
-      console.log(`   - Line ${line} content: "${validation.lineContent.trim()}"`);
-      console.log(`   - Line ${line} length: ${validation.lineContent.length} chars`);
-      console.log(`   - Line ${line} is empty: ${validation.lineContent.trim().length === 0 ? 'YES' : 'NO'}`);
+      console.log(`   - Line ${line} content: "${validation.lineContent?.trim() || 'EMPTY'}"`);
+      console.log(`   - Line ${line} length: ${validation.lineContent?.length || 0} chars`);
+      console.log(`   - Line ${line} is empty: ${!validation.lineContent?.trim() ? 'YES' : 'NO'}`);
       logLineContext(line, afterContent);
     } else {
       console.log(`❌ ERROR: ${validation.error}`);
@@ -269,8 +335,8 @@ function extractLineFromText(line, patterns) {
     if (match) {
       return {
         lineNumber: parseInt(match[1]),
-        issueType: match[2].trim(),
-        description: match[3].trim()
+        issueType: match[2] ? match[2].trim() : 'Issue',
+        description: match[3] ? match[3].trim() : match[2]?.trim() || 'Issue identified'
       };
     }
   }
@@ -382,30 +448,38 @@ function debugAIAnalysis(aiAnalysis, afterContent, filename) {
   }
   
   const afterLines = afterContent.split('\n');
-  console.log(`📊 File has ${afterLines.length} total lines`);
+  const hasNumberedContent = afterLines.some(line => line.match(/^(AFTER-\d+:|\s*\d+:)/));
+  
+  console.log(`📊 File Analysis:`);
+  console.log(`   - Total lines: ${afterLines.length}`);
+  console.log(`   - Has numbered content: ${hasNumberedContent ? '✅ YES' : '❌ NO'}`);
   
   const lineMatches = aiAnalysis.match(/Line\s+(\d+):/gi) || [];
   console.log(`🔍 AI mentioned ${lineMatches.length} line-specific issues:`);
   
   lineMatches.forEach((match, index) => {
-    const lineNumber = parseInt(match.match(/(\d+)/)[1]);
-    const validation = validateLineInFile(lineNumber, afterContent);
+    const aiLineNumber = parseInt(match.match(/(\d+)/)[1]);
+    const actualLine = mapAILineToActualLine(aiLineNumber, afterContent);
+    const validation = validateLineInFile(actualLine, afterContent);
     
     console.log(`\n   ${index + 1}. ${match}`);
-    console.log(`      - Line number: ${lineNumber}`);
+    console.log(`      - AI Line: ${aiLineNumber}, Mapped to: ${actualLine}`);
     console.log(`      - Valid range: ${validation.valid ? '✅' : '❌'}`);
     
     if (validation.valid) {
-      console.log(`      - Content: "${validation.lineContent.trim()}"`);
+      console.log(`      - Content: "${validation.lineContent?.trim() || 'EMPTY'}"`);
     } else {
       console.log(`      - ERROR: ${validation.error}`);
     }
   });
   
-  // Show file preview
+  // Show file preview with line numbers
   console.log(`\n📄 File preview (first 10 lines):`);
   for (let i = 0; i < Math.min(10, afterLines.length); i++) {
-    console.log(`   Line ${i + 1}: "${afterLines[i].trim()}"`);
+    const lineNum = i + 1;
+    const content = afterLines[i];
+    const isNumbered = content.match(/^(AFTER-\d+:|\s*\d+:)/);
+    console.log(`   Line ${lineNum}: "${content.trim()}"${isNumbered ? ' (numbered)' : ''}`);
   }
 }
 
@@ -421,16 +495,21 @@ export async function postInlineFileComment({
   afterContent = null
 }) {
   try {
-    logCommentDebug(filePath, line, content, afterContent);
+    // Map AI line number to actual line number if using numbered content
+    const actualLine = afterContent ? mapAILineToActualLine(line, afterContent) : line;
     
-    // Validate line if afterContent provided
+    logCommentDebug(filePath, actualLine, content, afterContent);
+    
+    // Validate the mapped line
     if (afterContent) {
-      const validation = validateLineInFile(line, afterContent);
+      const validation = validateLineInFile(actualLine, afterContent);
       if (!validation.valid) {
+        console.warn(`⚠️ Line mapping: AI referenced line ${line}, mapped to ${actualLine}, but validation failed`);
         return createCommentResult(false, {
           error: validation.error,
           filePath,
-          line
+          line: actualLine,
+          originalAILine: line
         });
       }
     }
@@ -439,7 +518,8 @@ export async function postInlineFileComment({
     console.log(`   - Repository: ${repositoryName}`);
     console.log(`   - PR ID: ${pullRequestId}`);
     console.log(`   - File Path: ${filePath}`);
-    console.log(`   - File Position: ${line}`);
+    console.log(`   - AI Referenced Line: ${line}`);
+    console.log(`   - Actual File Position: ${actualLine}`);
     console.log(`   - Relative File Version: AFTER`);
 
     const command = new PostCommentForPullRequestCommand({
@@ -449,7 +529,7 @@ export async function postInlineFileComment({
       afterCommitId,
       location: {
         filePath,
-        filePosition: line,
+        filePosition: actualLine,  // Use mapped line number
         relativeFileVersion: "AFTER"
       },
       content
@@ -463,12 +543,14 @@ export async function postInlineFileComment({
     return createCommentResult(true, {
       commentId: response.comment?.commentId,
       filePath,
-      line,
+      line: actualLine,
+      originalAILine: line,
       awsResponse: response.comment
     });
     
   } catch (err) {
-    console.error(`❌ AWS CodeCommit API ERROR for ${filePath} line ${line}:`);
+    const actualLine = afterContent ? mapAILineToActualLine(line, afterContent) : line;
+    console.error(`❌ AWS CodeCommit API ERROR for ${filePath} line ${line}->${actualLine}:`);
     console.error(`   - Error Name: ${err.name}`);
     console.error(`   - Error Message: ${err.message}`);
     console.error(`   - Error Code: ${err.$metadata?.httpStatusCode || 'unknown'}`);
@@ -477,7 +559,8 @@ export async function postInlineFileComment({
     return createCommentResult(false, {
       error: err.message,
       filePath,
-      line,
+      line: actualLine,
+      originalAILine: line,
       errorDetails: {
         name: err.name,
         code: err.$metadata?.httpStatusCode,
@@ -539,7 +622,8 @@ export async function postLineSpecificIssues({
     // Debug extracted issues
     console.log(`\n📋 EXTRACTED ISSUES DEBUG for ${filePath}:`);
     lineIssues.forEach((issue, index) => {
-      console.log(`   ${index + 1}. Line ${issue.line}: ${issue.type} - ${issue.problem.substring(0, 50)}...`);
+      const actualLine = mapAILineToActualLine(issue.line, afterContent);
+      console.log(`   ${index + 1}. AI Line ${issue.line} -> Actual Line ${actualLine}: ${issue.type} - ${issue.problem.substring(0, 50)}...`);
     });
     
     // Limit and prioritize issues
