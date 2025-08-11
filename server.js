@@ -77,6 +77,11 @@ app.use(bodyParser.json());
 
 // Repository indexing endpoint with duplicate prevention and cleanup
 app.post("/index", async (req, res) => {
+  console.log("🤖 Received indexing request");
+
+  console.log(`📨 Request body:`, req.body);
+  console.log(`🔑 Headers:`, req.headers);
+  
   const { repoName, branchName, forceReindex = false } = req.body;
 
   if (!repoName || !branchName) {

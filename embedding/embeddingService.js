@@ -22,6 +22,112 @@ const qdrant = new QdrantClient({
   apiKey: process.env.QDRANT_API_KEY, // For Qdrant Cloud
 });
 
+// **FILE FILTERING CONFIGURATION**
+const SKIP_PATTERNS = [
+  // Environment and configuration files
+  /\.env$/i,
+  /\.env\./i,
+  /.*\.env$/i,
+  /config\/.*\.env$/i,
+  /\.secrets$/i,
+  /\.credentials$/i,
+
+  // Application Properties
+   /application\.properties$/i,
+  /application-.*\.properties$/i,
+  /.*application\.properties$/i,
+  
+  // Sensitive files
+  /\.pem$/i,
+  /\.key$/i,
+  /\.crt$/i,
+  /\.p12$/i,
+  /\.jks$/i,
+  
+  // IDE and system files
+  /\.idea\//i,
+  /\.vscode\//i,
+  /\.git\//i,
+  /node_modules\//i,
+  /\.DS_Store$/i,
+  /thumbs\.db$/i,
+  
+  // Temporary and log files
+  /\.log$/i,
+  /\.tmp$/i,
+  /\.temp$/i,
+  /\.cache$/i,
+  /\.backup$/i,
+  
+  // Binary files
+  /\.(png|jpg|jpeg|gif|svg|ico|webp)$/i,
+  /\.(pdf|doc|docx|xls|xlsx|ppt|pptx)$/i,
+  /\.(zip|tar|gz|rar|7z)$/i,
+  /\.(exe|dll|so|dylib)$/i,
+  /\.(mp4|mp3|avi|mov|wav)$/i,
+  
+  // Build artifacts
+  /dist\//i,
+  /build\//i,
+  /target\//i,
+  /\.jar$/i,
+  /\.war$/i,
+  /\.class$/i
+];
+
+function shouldSkipFile(filePath) {
+  return SKIP_PATTERNS.some(pattern => pattern.test(filePath));
+}
+
+function isTextFile(filePath, content) {
+  // Check if file extension suggests text content
+  const textExtensions = [
+    'js', 'jsx', 'ts', 'tsx', 'java', 'py', 'rb', 'php', 'go', 'rs', 'c', 'cpp', 'cs',
+    'html', 'css', 'scss', 'less', 'json', 'xml', 'yaml', 'yml', 'toml', 'md', 'txt',
+    'sql', 'sh', 'bash', 'ps1', 'dockerfile', 'tf', 'vue', 'svelte', 'kt', 'scala'
+  ];
+  
+  const extension = getFileExtension(filePath).toLowerCase();
+  if (textExtensions.includes(extension)) {
+    return true;
+  }
+  
+  // For unknown extensions, check if content is mostly text
+  try {
+    // Check for null bytes (binary indicator)
+    if (content.includes('\0')) {
+      return false;
+    }
+    
+    // Check if most characters are printable
+    const printableChars = content.split('').filter(char => {
+      const code = char.charCodeAt(0);
+      return (code >= 32 && code <= 126) || code === 9 || code === 10 || code === 13;
+    }).length;
+    
+    return (printableChars / content.length) > 0.85;
+  } catch {
+    return false;
+  }
+}
+
+function containsSensitiveData(content) {
+  const sensitivePatterns = [
+    /[A-Z_]+KEY\s*=\s*['\"]?[A-Za-z0-9+/=]{20,}/i,
+    /PASSWORD\s*=\s*['\"][^'\"]{8,}/i,
+    /SECRET\s*=\s*['\"][^'\"]{16,}/i,
+    /TOKEN\s*=\s*['\"][^'\"]{20,}/i,
+    /DATABASE_URL\s*=\s*['\"]postgres:\/\//i,
+    /MONGODB_URI\s*=\s*['\"]mongodb:/i,
+    /AWS_ACCESS_KEY_ID\s*=\s*['\"]?[A-Z0-9]{20}/i,
+    /AWS_SECRET_ACCESS_KEY\s*=\s*['\"]?[A-Za-z0-9+/=]{40}/i,
+    /-----BEGIN (RSA |)PRIVATE KEY-----/i,
+    /ssh-rsa [A-Za-z0-9+/=]{200,}/i
+  ];
+  
+  return sensitivePatterns.some(pattern => pattern.test(content));
+}
+
 let embedder;
 async function getEmbedder() {
   if (!embedder) {
@@ -241,16 +347,23 @@ export async function createEmbeddingsForRepo(repoName, branchName) {
   const embedder = await getEmbedder();
   const splitter = new RecursiveCharacterTextSplitter({ chunkSize: 500, chunkOverlap: 50 });
 
-  // Processing files
+  // Processing files with security filtering
   const documents = [];
   const skippedFiles = [];
   let totalChunks = 0;
   let processedCount = 0;
 
-  console.log("🔨 Processing files...");
+  console.log("🔨 Processing files with security filtering...");
   for (const file of files) {
-    const content = file.content;
     processedCount++;
+    
+    // Skip files based on patterns (SECURITY FILTER)
+    if (shouldSkipFile(file.path)) {
+      skippedFiles.push({ path: file.path, reason: 'filtered_pattern' });
+      continue;
+    }
+    
+    const content = file.content;
 
     // Skip empty files
     if (!content.trim()) {
@@ -258,9 +371,22 @@ export async function createEmbeddingsForRepo(repoName, branchName) {
       continue;
     }
 
+    // Skip non-text files (BINARY FILTER)
+    if (!isTextFile(file.path, content)) {
+      skippedFiles.push({ path: file.path, reason: 'non_text' });
+      continue;
+    }
+
     // Skip large files
     if (content.length > 50000) {
       skippedFiles.push({ path: file.path, reason: 'too_large', size: content.length });
+      continue;
+    }
+
+    // Skip files that contain sensitive data (SECURITY FILTER)
+    if (containsSensitiveData(content)) {
+      skippedFiles.push({ path: file.path, reason: 'sensitive_content' });
+      console.warn(`🔒 Skipped ${file.path}: Contains sensitive data`);
       continue;
     }
 
@@ -372,7 +498,7 @@ export async function createEmbeddingsForRepo(repoName, branchName) {
     throw e;
   }
 
-  // Final summary
+  // Final summary with security information
   console.log("\n📊 Embedding Summary:");
   console.log(`   📁 Total files: ${files.length}`);
   console.log(`   ✅ Successfully processed: ${files.length - skippedFiles.length}`);
@@ -383,13 +509,19 @@ export async function createEmbeddingsForRepo(repoName, branchName) {
   console.log(`   🗃️ Qdrant collection: ${collectionName}`);
   console.log(`   🔄 Collection existed: ${collectionExisted ? 'Yes (cleaned)' : 'No (created)'}`);
   
-  // Show skip reasons if any
+  // Show skip reasons with security emphasis
   if (skippedFiles.length > 0) {
     const skipReasons = skippedFiles.reduce((acc, file) => {
       acc[file.reason] = (acc[file.reason] || 0) + 1;
       return acc;
     }, {});
-    console.log(`   Skip reasons:`, skipReasons);
+    console.log(`   🔒 Skip reasons (security filtering active):`, skipReasons);
+    
+    // Highlight security-related skips
+    const securitySkips = (skipReasons.filtered_pattern || 0) + (skipReasons.sensitive_content || 0);
+    if (securitySkips > 0) {
+      console.log(`   🛡️ Security-filtered files: ${securitySkips}`);
+    }
   }
 
   return {
@@ -404,6 +536,11 @@ export async function createEmbeddingsForRepo(repoName, branchName) {
     skipReasons: skippedFiles.reduce((acc, file) => {
       acc[file.reason] = (acc[file.reason] || 0) + 1;
       return acc;
-    }, {})
+    }, {}),
+    securityFiltering: {
+      enabled: true,
+      patternsCount: SKIP_PATTERNS.length,
+      sensitiveContentDetection: true
+    }
   };
 }
